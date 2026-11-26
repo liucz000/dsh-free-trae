@@ -206,11 +206,13 @@ window.__ModuleLoader__.load({
       return Number.isInteger(sum) ? String(sum) : sum.toFixed(1)
     }
 
-    function checkinLabel(row) {
+    function checkinLabel(row, short = false) {
       if (row.status === 'ok') return row.amount > 0 ? `✓ 领取成功 +${row.amount}` : `✓ ${row.message || '已领取'}`
-      if (row.status === 'already') return row.message || '今日已领取'
-      if (row.status === 'unsupported') return row.message || '不支持'
-      return `失败：${row.message || '未知错误'}`
+      if (row.status === 'already') return short ? '今日已签' : (row.message || '今日已领取')
+      if (row.status === 'pending') return short ? '待刷新' : (row.message || '待刷新')
+      if (row.status === 'ineligible') return short ? '无资格' : (row.message || '无领取资格')
+      if (row.status === 'unsupported') return short ? '不支持' : (row.message || '不支持')
+      return short ? '失败' : `失败：${row.message || '未知错误'}`
     }
 
     function formatTime(timestamp) {
@@ -262,13 +264,15 @@ window.__ModuleLoader__.load({
           const result = checkinResultOf(checkin, row.id)
           const tone = result === undefined
             ? S.pill
-            : (result.status === 'ok' || result.status === 'already' ? S.pillOk : S.pillBad)
+            : (result.status === 'ok' || result.status === 'already'
+              ? S.pillOk
+              : (result.status === 'pending' || result.status === 'ineligible' ? S.pill : S.pillBad))
           return h('div', { key: row.id, style: S.account },
             h('div', { style: S.accountText },
               h('div', { style: S.nameLine },
                 h('span', { style: S.name }, row.name || row.uid),
                 h('span', { style: S.pill }, `积分 ${creditsText}`),
-                result !== undefined ? h('span', { style: tone }, checkinLabel(result)) : null,
+                result !== undefined ? h('span', { style: tone }, checkinLabel(result, true)) : null,
               ),
               h('div', { style: S.subtle },
                 row.region === 'cn' ? '国内' : (row.region === 'global' ? '国际' : row.region),

@@ -1,15 +1,24 @@
 /**
  * Qoder 积分查询 + 每日 Credits 领取。
  *
- * 协议来源：玖念/traework2api 的 QoderAuthApi.kt（`fetchCredits` / `loadCampaigns` / `claimOne`）。
+ * 协议来源：玖念/traework2api 的 QoderAuthApi.kt（`fetchCredits` / `loadCampaigns` / `claimOne`），
+ * 签到判定参考 hulibuld/dsh-get-it-for-free 的 `src/qoder-checkin.js`。
  * 两者都是普通 Bearer 接口，**不需要 COSY 签名**（只有 `/algo/` 聊天网关要签）。
  *
- *   - `GET  {openApiBase}/api/v2/quota/usage`                      → 各类额度 remaining 之和
+ *   - `GET  {openApiBase}/api/v2/quota/usage`                       → 各类额度 remaining 之和
  *   - `GET  {openApiBase}/sash/api/v1/me/campaigns?forceRefresh=true` → 每日活动列表
- *   - `POST {openApiBase}/sash/api/v1/me/campaigns/{id}/claim`     → 领取（body `{}`，幂等）
+ *   - `POST {openApiBase}/sash/api/v1/me/campaigns/{id}/claim`      → 领取（幂等）
+ *   - `GET  {openApiBase}/sash/api/v2/me/usage`                     → 无活动时区分「没开通/无资格」
  *
  * ⚠️ 活动列表能否下发取决于 `Cosy-ClientType: 10`（写成 5 会静默返回空列表）。
- * 缺桌面身份头时服务端也可能静默隐藏活动，所以拿到空列表时如实报「今日无可领活动」。
+ * 缺桌面身份头时服务端也可能静默隐藏活动，所以拿到空列表时如实报原因，不当作「已签」。
+ *
+ * 判定规则（与参考实现一致）：
+ *   - 只有 `actionType === 'CLAIM_BENEFIT'` 才算签到活动；
+ *   - `CLAIMED` 且 `endAt` 未过期才算「今天已签」，避免把上一轮当成今天；
+ *   - UTC+8 10:00 前活动尚未刷新，空列表报「待刷新」而不是失败；
+ *   - 无活动时用 usage 区分体验版无资格 / 未开通 / 今天没有活动；
+ *   - claim 回 `BLOCKED` 之类不等于失败：隔 1.2 秒重看列表，已变 CLAIMED 就按成功记。
  *
  * @module src/qoder/credits.js
  */
@@ -18,16 +27,23 @@ import { HttpError, request } from '../http.js'
 import { regionOf } from './auth.js'
 
 const EP_USAGE = '/api/v2/quota/usage'
+const EP_ME_USAGE = '/sash/api/v2/me/usage'
 const EP_CAMPAIGNS = '/sash/api/v1/me/campaigns'
 /** 决定活动列表能否下发；官方桌面端实测值。 */
 const COSY_CLIENT_TYPE = '10'
 const COSY_VERSION_MINIMAL = '1.0.1'
+/** 每日活动在 UTC+8 10:00 刷新，之前看到的是昨天那一轮。 */
+const REFRESH_HOUR_UTC8 = 10
+const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000
+const CONFIRM_DELAY_MS = 1_200
+const INELIGIBLE_MESSAGE = '体验版（免费）账号自 2026-11-19 起不再开放每日领取；开通试用/专业版/会员卡后可领，重试不会改变结果'
+const NOT_ACTIVATED_MESSAGE = '该账号尚未在 Qoder 侧开通每日领取，请先用官方客户端登录一次'
 
 function minimalHeaders(jobToken, { json = false } = {}) {
   const headers = {
     authorization: `Bearer ${jobToken}`,
     accept: 'application/json',
-    'user-agent': 'traework2api',
+    'user-agent': 'Qoder',
     'cosy-version': COSY_VERSION_MINIMAL,
     'cosy-clienttype': COSY_CLIENT_TYPE,
   }
@@ -118,6 +134,7 @@ export function parseCampaigns(input) {
       actionType: String(item.actionType ?? ''),
       benefitKind: String(benefit.kind ?? ''),
       benefitAmount: amount,
+      endAt: Number(item.endAt ?? 0) || 0,
       claimable: claimStatus.toUpperCase() === 'CLAIMABLE',
       grantsCredits: amount > 0,
     })
@@ -159,34 +176,119 @@ export async function claimCampaign(account, campaignId, { signal } = {}) {
   return parseClaim(root)
 }
 
-function alreadyMessage(campaigns) {
-  const creditCount = campaigns.filter(item => item.grantsCredits).length
-  if (campaigns.length === 0) return '今日无可领活动（上游返回空列表）'
-  if (creditCount > 0 && campaigns.every(item => item.claimStatus.toUpperCase() === 'CLAIMED')) {
+/** 今天的活动是否已刷新（UTC+8 10:00）。 */
+export function campaignsRefreshedToday(now = Date.now()) {
+  return new Date(now + UTC8_OFFSET_MS).getUTCHours() >= REFRESH_HOUR_UTC8
+}
+
+/** 活动列表里没有每日活动时，用 usage 区分「体验版无资格 / 没开通 / 今天没活动」。 */
+async function fetchMeUsage(account, { signal } = {}) {
+  try {
+    const root = await callApi(account, EP_ME_USAGE, { signal })
+    const usage = root?.qoderUsage
+    if (usage === null || typeof usage !== 'object') return null
+    return {
+      userType: String(usage.userType ?? ''),
+      hasAddOnQuota: usage.addOnQuota !== undefined && usage.addOnQuota !== null,
+    }
+  } catch {
+    return null
+  }
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function alreadyMessage(benefits) {
+  const creditCount = benefits.filter(item => item.grantsCredits).length
+  if (benefits.length === 0) return '今日没有可领取的每日活动'
+  if (creditCount > 0 && benefits.every(item => item.claimStatus.toUpperCase() === 'CLAIMED')) {
     return `已领取 ${creditCount} 条`
   }
-  if (creditCount === 0) return `无积分活动（${campaigns.length} 条均为查看类，不发 Credits）`
-  return `无待领活动（${campaigns.length} 条均已处理）`
+  return '无待领活动（均已处理）'
 }
 
 /**
- * 单账号领取：列活动 → 领所有 CLAIMABLE → 汇总。
- * 返回 `{status, amount, message}`，status ∈ ok / already / fail。
+ * 领一条并确认。
+ * `BLOCKED` 不代表领不到——服务端常常已经登记，只是当次响应没下发；隔一下重看列表。
  */
-export async function runCheckin(account, { signal } = {}) {
+async function claimAndConfirm(account, campaign, { signal } = {}) {
+  const result = await claimCampaign(account, campaign.id, { signal })
+  if (result.status.toUpperCase() === 'CLAIMED') {
+    if (result.newly) {
+      return {
+        status: 'claimed',
+        amount: result.amount > 0 ? result.amount : campaign.benefitAmount,
+      }
+    }
+    return { status: 'already', amount: campaign.benefitAmount }
+  }
+  await delay(CONFIRM_DELAY_MS)
   const { campaigns } = await fetchCampaigns(account, { signal })
-  const claimable = campaigns.filter(item => item.claimable)
-  if (claimable.length === 0) return { status: 'already', amount: 0, message: alreadyMessage(campaigns) }
+  const row = campaigns.find(item => item.id === campaign.id)
+  if (row !== undefined && row.claimStatus.toUpperCase() === 'CLAIMED') {
+    return {
+      status: 'claimed',
+      amount: row.benefitAmount > 0 ? row.benefitAmount : campaign.benefitAmount,
+    }
+  }
+  return {
+    status: 'fail',
+    message: `领取未完成（status=${result.status || '未知'}），服务端没当场下发积分`,
+  }
+}
+
+/**
+ * 单账号领取：列活动 → 领所有可领的 CLAIM_BENEFIT → 汇总。
+ * 返回 `{status, amount, message}`，status ∈ ok / already / pending / ineligible / fail。
+ */
+export async function runCheckin(account, { signal, now = Date.now() } = {}) {
+  const { campaigns } = await fetchCampaigns(account, { signal })
+  const benefits = campaigns.filter(item => item.actionType === 'CLAIM_BENEFIT')
+
+  const today = benefits.find(item =>
+    item.claimStatus.toUpperCase() === 'CLAIMED' && item.endAt * 1000 > now)
+  if (today !== undefined) {
+    return {
+      status: 'already',
+      amount: today.benefitAmount,
+      message: today.benefitAmount > 0 ? `今日已领取 +${today.benefitAmount}` : '今日已领取',
+    }
+  }
+
+  const claimable = benefits.filter(item =>
+    item.claimStatus.toUpperCase() === 'CLAIMABLE' && (item.endAt === 0 || item.endAt * 1000 > now))
+  if (claimable.length === 0) {
+    if (benefits.length === 0) {
+      if (!campaignsRefreshedToday(now)) {
+        return { status: 'pending', amount: 0, message: '今天这一轮还没刷新（UTC+8 10:00 刷新），稍后再试' }
+      }
+      const usage = await fetchMeUsage(account, { signal })
+      if (usage !== null && usage.userType === 'personal_standard') {
+        return { status: 'ineligible', amount: 0, message: INELIGIBLE_MESSAGE }
+      }
+      if (usage !== null && usage.hasAddOnQuota === false) {
+        return { status: 'pending', amount: 0, message: NOT_ACTIVATED_MESSAGE }
+      }
+    }
+    return { status: 'already', amount: 0, message: alreadyMessage(benefits) }
+  }
 
   let total = 0
   let fresh = 0
+  let alreadyAmount = 0
   let lastError = ''
   for (const campaign of claimable) {
     try {
-      const result = await claimCampaign(account, campaign.id, { signal })
-      if (result.newly) {
+      const result = await claimAndConfirm(account, campaign, { signal })
+      if (result.status === 'claimed') {
         total += result.amount
         fresh += 1
+      } else if (result.status === 'already') {
+        alreadyAmount += result.amount
+      } else {
+        lastError = result.message ?? '领取失败'
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
@@ -194,5 +296,6 @@ export async function runCheckin(account, { signal } = {}) {
   }
   if (fresh > 0 && total > 0) return { status: 'ok', amount: total, message: '' }
   if (fresh > 0) return { status: 'ok', amount: 0, message: `领取 ${fresh} 条（无 Credits）` }
-  return { status: 'already', amount: 0, message: lastError !== '' ? `领取未生效：${lastError}` : '今日已领取' }
+  if (alreadyAmount > 0) return { status: 'already', amount: alreadyAmount, message: '今日已领取' }
+  return { status: 'fail', amount: 0, message: lastError !== '' ? lastError : '领取未生效' }
 }

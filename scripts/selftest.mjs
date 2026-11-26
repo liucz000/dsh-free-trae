@@ -28,6 +28,7 @@ import {
   sessionIdFor,
 } from '../src/trae/credits.js'
 import {
+  campaignsRefreshedToday,
   parseCampaigns,
   parseClaim,
   parseCredits as parseQoderCredits,
@@ -260,6 +261,20 @@ test('Qoder 积分与活动解析', () => {
     parseClaim({ status: 'CLAIMED', replayed: true, benefit: { amount: 100 } }),
     { newly: false, amount: 0, status: 'CLAIMED' },
   )
+})
+
+test('Qoder 每日活动判定', () => {
+  // UTC+8 09:59 还没刷新；10:00 之后才是今天这一轮。
+  assert.equal(campaignsRefreshedToday(Date.UTC(2026, 0, 2, 1, 59)), false)
+  assert.equal(campaignsRefreshedToday(Date.UTC(2026, 0, 2, 2, 0)), true)
+  const list = parseCampaigns({ campaigns: [
+    { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', endAt: 123, benefit: { amount: '50' } },
+    { campaignId: 'c2', actionType: 'VIEW_PAGE', claimStatus: 'CLAIMABLE' },
+  ] })
+  assert.equal(list.campaigns[0].actionType, 'CLAIM_BENEFIT')
+  assert.equal(list.campaigns[0].endAt, 123)
+  assert.equal(list.campaigns[0].benefitAmount, 50)
+  assert.equal(list.campaigns[1].actionType, 'VIEW_PAGE')
 })
 
 test('签到时间与到期判定', () => {
