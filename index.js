@@ -8,6 +8,11 @@
  * 不包含其它任何渠道、任何中转/免登录池。账号与 token 只落在
  * `~/.dsh/trae-qoder/accounts.json`（0600），HTTP 接口只返回掩码视图。
  *
+ * 设置页的接口有两条挂载路径，二选一都可用：
+ *   1. `ctx.connection.fetch`：共享 `/api` 通道上的精确 Fetch 路由。Web 与桌面端
+ *      （Electron 走 IPC 桥，不提供 webServer）都走这条。
+ *   2. `ctx.webServer`：`/api/trae-qoder` 前缀路由，作为没有 connection 时的兜底。
+ *
  * @module dsh-trae-qoder
  */
 
@@ -39,6 +44,20 @@ const API_PREFIX = '/api/trae-qoder'
 const DEVICE_TTL_MS = 10 * 60_000
 const MAX_BODY_BYTES = 1 << 20
 
+/** 设置页用到的全部接口：路径后缀 → 允许的方法。 */
+const ENDPOINTS = [
+  { path: '/summary', methods: ['GET'] },
+  { path: '/trae/login/url', methods: ['POST'] },
+  { path: '/trae/login', methods: ['POST'] },
+  { path: '/qoder/login/pat', methods: ['POST'] },
+  { path: '/qoder/login/url', methods: ['POST'] },
+  { path: '/qoder/login/poll', methods: ['GET'] },
+  { path: '/accounts/active', methods: ['POST'] },
+  { path: '/accounts/remove', methods: ['POST'] },
+  { path: '/accounts/refresh', methods: ['POST'] },
+  { path: '/models', methods: ['GET'] },
+]
+
 function textOf(error) {
   return error instanceof Error ? error.message : String(error)
 }
@@ -47,23 +66,20 @@ function regionList(regions) {
   return Object.values(regions).map(region => ({ id: region.id, label: region.label }))
 }
 
-async function readJson(req) {
-  const chunks = []
-  let size = 0
-  for await (const chunk of req) {
-    size += chunk.length
-    if (size > MAX_BODY_BYTES) throw new Error('请求体过大')
-    chunks.push(chunk)
-  }
-  if (chunks.length === 0) return {}
+function parseBody(text) {
+  if (text === '') return {}
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    return JSON.parse(text)
   } catch {
     throw new Error('请求体不是合法 JSON')
   }
 }
 
-function createHandler({ store, logger, adapter }) {
+/**
+ * 与传输方式无关的路由：输入方法、路径、查询串和已解析的请求体，输出状态码与 JSON。
+ * @param {{ store: object, logger: object, adapter: object }} deps
+ */
+export function createRouter({ store, logger, adapter }) {
   const deviceSessions = new Map()
 
   function sweepSessions() {
@@ -85,48 +101,20 @@ function createHandler({ store, logger, adapter }) {
     }
   }
 
-  return async function handler(req, res) {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
-    const routePath = url.pathname.replace(new RegExp(`^${API_PREFIX}`), '').replace(/\/+$/, '') || '/'
-    const method = String(req.method ?? 'GET').toUpperCase()
+  const send = (status, payload) => ({ status, payload })
 
-    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : ''
-    const cors = origin === ''
-      ? {}
-      : {
-          'access-control-allow-origin': origin,
-          'access-control-allow-credentials': 'true',
-          'access-control-allow-methods': 'GET,POST,OPTIONS',
-          'access-control-allow-headers': 'content-type',
-          vary: 'origin',
-        }
-    const send = (status, payload) => {
-      const body = JSON.stringify(payload)
-      res.writeHead(status, {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'no-store',
-        ...cors,
-      })
-      res.end(body)
-    }
-    if (method === 'OPTIONS') {
-      res.writeHead(204, cors)
-      res.end()
-      return
-    }
-
+  async function dispatch(method, pathname, query, body) {
+    const routePath = pathname.replace(new RegExp(`^${API_PREFIX}`), '').replace(/\/+$/, '') || '/'
     try {
       if (method === 'GET' && routePath === '/summary') return send(200, summary())
 
       if (method === 'POST' && routePath === '/trae/login/url') {
-        const body = await readJson(req)
         const region = typeof body.region === 'string' ? body.region : 'cn'
         if (!(region in TRAE_REGIONS)) return send(400, { error: `未知区域 ${region}` })
         return send(200, { ok: true, region, url: buildTraeLoginUrl(region) })
       }
 
       if (method === 'POST' && routePath === '/trae/login') {
-        const body = await readJson(req)
         const region = typeof body.region === 'string' ? body.region : 'cn'
         if (!(region in TRAE_REGIONS)) return send(400, { error: `未知区域 ${region}` })
         const callbackUrl = typeof body.callbackUrl === 'string' ? body.callbackUrl : ''
@@ -138,7 +126,6 @@ function createHandler({ store, logger, adapter }) {
       }
 
       if (method === 'POST' && routePath === '/qoder/login/pat') {
-        const body = await readJson(req)
         const region = typeof body.region === 'string' ? body.region : 'cn'
         if (!(region in QODER_REGIONS)) return send(400, { error: `未知区域 ${region}` })
         const pat = typeof body.pat === 'string' ? body.pat : ''
@@ -149,7 +136,6 @@ function createHandler({ store, logger, adapter }) {
       }
 
       if (method === 'POST' && routePath === '/qoder/login/url') {
-        const body = await readJson(req)
         const region = typeof body.region === 'string' ? body.region : 'cn'
         if (!(region in QODER_REGIONS)) return send(400, { error: `未知区域 ${region}` })
         sweepSessions()
@@ -161,7 +147,7 @@ function createHandler({ store, logger, adapter }) {
 
       if (method === 'GET' && routePath === '/qoder/login/poll') {
         sweepSessions()
-        const id = url.searchParams.get('id') ?? ''
+        const id = query.get('id') ?? ''
         const session = deviceSessions.get(id)
         if (session === undefined) return send(404, { error: '授权会话已过期，请重新发起' })
         const result = await pollDeviceSession(session)
@@ -173,7 +159,6 @@ function createHandler({ store, logger, adapter }) {
       }
 
       if (method === 'POST' && routePath === '/accounts/active') {
-        const body = await readJson(req)
         const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
         if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
         if (!store.select(provider, String(body.id ?? ''))) return send(404, { error: '账号不存在' })
@@ -181,7 +166,6 @@ function createHandler({ store, logger, adapter }) {
       }
 
       if (method === 'POST' && routePath === '/accounts/remove') {
-        const body = await readJson(req)
         const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
         if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
         const removed = store.remove(provider, String(body.id ?? ''))
@@ -189,7 +173,6 @@ function createHandler({ store, logger, adapter }) {
       }
 
       if (method === 'POST' && routePath === '/accounts/refresh') {
-        const body = await readJson(req)
         const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
         if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
         const account = store.list(provider).find(row => row.id === String(body.id ?? ''))
@@ -201,7 +184,7 @@ function createHandler({ store, logger, adapter }) {
       }
 
       if (method === 'GET' && routePath === '/models') {
-        const provider = url.searchParams.get('provider') === 'qoder' ? 'qoder' : 'trae'
+        const provider = query.get('provider') === 'qoder' ? 'qoder' : 'trae'
         const models = await adapter.listModels(provider)
         return send(200, {
           ok: true,
@@ -221,6 +204,89 @@ function createHandler({ store, logger, adapter }) {
       return send(status, { error: textOf(error) })
     }
   }
+
+  return { dispatch, summary }
+}
+
+/** node:http（webServer 的前缀兜底路由）。 */
+function httpHandler(router) {
+  return async function handler(req, res) {
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+    const method = String(req.method ?? 'GET').toUpperCase()
+    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : ''
+    const cors = origin === ''
+      ? {}
+      : {
+          'access-control-allow-origin': origin,
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-methods': 'GET,POST,OPTIONS',
+          'access-control-allow-headers': 'content-type',
+          vary: 'origin',
+        }
+    const send = (status, payload) => {
+      res.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+        ...cors,
+      })
+      res.end(JSON.stringify(payload))
+    }
+    if (method === 'OPTIONS') {
+      res.writeHead(204, cors)
+      res.end()
+      return
+    }
+
+    let body = {}
+    if (method === 'POST') {
+      const chunks = []
+      let size = 0
+      try {
+        for await (const chunk of req) {
+          size += chunk.length
+          if (size > MAX_BODY_BYTES) throw new Error('请求体过大')
+          chunks.push(chunk)
+        }
+        body = parseBody(Buffer.concat(chunks).toString('utf8'))
+      } catch (error) {
+        send(400, { error: textOf(error) })
+        return
+      }
+    }
+
+    const result = await router.dispatch(method, url.pathname, url.searchParams, body)
+    send(result.status, result.payload)
+  }
+}
+
+/** 共享 `/api` 通道上的精确 Fetch 路由（Web 与桌面端通用）。 */
+function fetchHandler(router, pathname) {
+  return async function fetch(request) {
+    const url = new URL(request.url)
+    let body = {}
+    if (request.method === 'POST') {
+      const text = await request.text()
+      if (Buffer.byteLength(text, 'utf8') > MAX_BODY_BYTES) {
+        return new Response(JSON.stringify({ error: '请求体过大' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+        })
+      }
+      try {
+        body = parseBody(text)
+      } catch (error) {
+        return new Response(JSON.stringify({ error: textOf(error) }), {
+          status: 400,
+          headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+        })
+      }
+    }
+    const result = await router.dispatch(request.method, pathname, url.searchParams, body)
+    return new Response(JSON.stringify(result.payload), {
+      status: result.status,
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    })
+  }
 }
 
 /**
@@ -239,14 +305,38 @@ export function apply(ctx, config = {}) {
     { provider: 'qoder', displayName: 'Qoder', settingsNs, settingsPath: [] },
   ])
 
-  const handler = createHandler({ store, logger, adapter })
+  const router = createRouter({ store, logger, adapter })
+  let mounted = false
+
+  // 首选：共享 /api 通道的精确路由。桌面端没有 webServer，只有这条能生效。
+  ctx.inject(['connection'], scoped => {
+    const connection = scoped.connection
+    if (connection?.fetch?.register === undefined) return
+    for (const endpoint of ENDPOINTS) {
+      const path = `${API_PREFIX}${endpoint.path}`
+      const handler = fetchHandler(router, path)
+      scoped.effect(
+        () => connection.fetch.register({
+          path,
+          methods: endpoint.methods,
+          requestBody: 'buffered',
+          fetch: handler,
+        }),
+        `trae-qoder: ${path}`,
+      )
+    }
+    mounted = true
+    logger.info?.(`trae-qoder: 设置接口挂在共享通道 ${API_PREFIX}`)
+  })
+
+  // 兜底：没有 connection 的宿主（例如精简 Web 组合）用 webServer 前缀路由。
   ctx.inject(['webServer'], scoped => {
     const server = scoped.webServer
     scoped.effect(
-      () => server.register({ kind: 'prefix', path: API_PREFIX, handler }),
+      () => server.register({ kind: 'prefix', path: API_PREFIX, handler: httpHandler(router) }),
       'trae-qoder: settings API',
     )
-    logger.info?.(`trae-qoder: 设置接口挂在 ${API_PREFIX}`)
+    if (!mounted) logger.info?.(`trae-qoder: 设置接口挂在 ${API_PREFIX}`)
   })
 
   ctx.effect(() => () => {

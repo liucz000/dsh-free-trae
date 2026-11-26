@@ -19,7 +19,10 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { createElement: h, useState, useEffect, useCallback } = React
 
-    const API = new URL('api/trae-qoder', document.baseURI).pathname.replace(/\/$/, '')
+    // Web 走同源相对路径；桌面端页面是 file://，必须用绝对 /api 路径交给 IPC 桥。
+    const API = /^https?:/i.test(document.baseURI)
+      ? new URL('api/trae-qoder', document.baseURI).pathname.replace(/\/$/, '')
+      : '/api/trae-qoder'
     const NS = 'settings.traeQoder'
     const POLL_MS = 1500
     const DEVICE_TTL_MS = 5 * 60_000

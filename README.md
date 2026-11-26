@@ -23,7 +23,7 @@
 cd dsh-trae-qoder
 npm pack
 # 用你的 DSH 安装插件的方式安装生成的 tar 包，例如：
-dsh plugin install ./dsh-trae-qoder-0.1.0.tgz
+dsh plugin install ./dsh-trae-qoder-0.1.1.tgz
 ```
 
 也可以直接把这个目录放进 DSH 的插件目录，或用本地路径安装。安装后重启 DSH，设置页会出现 **TRAE / Qoder** 分区。
@@ -90,7 +90,8 @@ Qoder 目录解析与请求体、块事件收尾、账号库权限、SSE 拆帧�
 - **token 是明文落盘的**（Node 侧没有 Android KeyStore 那种系统密钥库）。这台机器上的
   其它进程理论上读得到，介意的话请给磁盘加密或缩短账号寿命。
 - HTTP 接口只返回掩码后的账号（不含 accessToken / refreshToken / PAT）。
-- 插件不主动监听任何端口；路由挂在 DSH 自己的 webServer 上，只允许同源访问（带 CORS 预检）。
+- 插件不主动监听任何端口：Web 端挂在 DSH 自己的 webServer 上（同源 + CORS 预检），
+  桌面端挂在宿主共享的 `/api` 通道上（Electron 用 IPC 桥，没有 webServer）。
 - 不包含任何遥测；除 Trae / Qoder 官方域名外不发请求。
 
 ## 已知限制
