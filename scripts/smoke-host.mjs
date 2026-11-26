@@ -90,7 +90,7 @@ function makeCtx({ withWebServer, withConnection, duplicate = false }) {
 // ── 1. 桌面端：只有 connection ────────────────────────────────────────────
 const desktop = makeCtx({ withWebServer: false, withConnection: true })
 assert.equal(desktop.routes.length, 0, '桌面端不该依赖 webServer')
-assert.equal(desktop.fetchRoutes.size, 10, `桌面端应注册 10 条精确路由，实际 ${desktop.fetchRoutes.size}`)
+assert.equal(desktop.fetchRoutes.size, 13, `桌面端应注册 13 条精确路由，实际 ${desktop.fetchRoutes.size}`)
 
 async function callFetch(pathname, { method = 'GET', body } = {}) {
   const route = desktop.fetchRoutes.get(`/api/trae-qoder${pathname.split('?')[0]}`)
@@ -120,6 +120,26 @@ const dModels = await callFetch('/models?provider=qoder')
 assert.equal(dModels.status, 200)
 assert.ok(dModels.json.models.length >= 16)
 ok('桌面端 GET /models')
+
+const dCredits = await callFetch('/credits')
+assert.equal(dCredits.status, 200)
+assert.deepEqual(dCredits.json.trae, [])
+assert.deepEqual(dCredits.json.qoder, [])
+ok('桌面端 GET /credits（空账号）')
+
+const dCheckinBad = await callFetch('/checkin/config', { method: 'POST', body: { enabled: true, time: '25:00' } })
+assert.equal(dCheckinBad.status, 400)
+ok('桌面端 POST /checkin/config 非法时间 400')
+
+const dCheckin = await callFetch('/checkin/config', { method: 'POST', body: { enabled: false, time: '09:30' } })
+assert.equal(dCheckin.status, 200)
+assert.equal(dCheckin.json.checkin.time, '09:30')
+ok('桌面端 POST /checkin/config')
+
+const dRun = await callFetch('/checkin/run', { method: 'POST', body: {} })
+assert.equal(dRun.status, 200)
+assert.deepEqual(dRun.json.results, [])
+ok('桌面端 POST /checkin/run（空账号）')
 
 const dBad = await callFetch('/trae/login', { method: 'POST', body: { region: 'cn', callbackUrl: '' } })
 assert.equal(dBad.status, 400)

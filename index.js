@@ -37,6 +37,12 @@ import {
 } from './src/qoder/auth.js'
 import { clearCatalogCache } from './src/qoder/models.js'
 import { publicAccount } from './src/store.js'
+import {
+  collectCredits,
+  createCheckinRunner,
+  normalizeTime,
+  startCheckinScheduler,
+} from './src/checkin.js'
 export const name = 'trae-qoder'
 export const inject = ['llm']
 
@@ -56,6 +62,9 @@ const ENDPOINTS = [
   { path: '/accounts/remove', methods: ['POST'] },
   { path: '/accounts/refresh', methods: ['POST'] },
   { path: '/models', methods: ['GET'] },
+  { path: '/credits', methods: ['GET'] },
+  { path: '/checkin/config', methods: ['POST'] },
+  { path: '/checkin/run', methods: ['POST'] },
 ]
 
 function textOf(error) {
@@ -79,7 +88,7 @@ function parseBody(text) {
  * 与传输方式无关的路由：输入方法、路径、查询串和已解析的请求体，输出状态码与 JSON。
  * @param {{ store: object, logger: object, adapter: object }} deps
  */
-export function createRouter({ store, logger, adapter }) {
+export function createRouter({ store, logger, adapter, checkin }) {
   const deviceSessions = new Map()
 
   function sweepSessions() {
@@ -97,6 +106,7 @@ export function createRouter({ store, logger, adapter }) {
         qoder: { label: 'Qoder', regions: regionList(QODER_REGIONS) },
       },
       accounts: store.snapshot(),
+      checkin: store.settings().checkin,
       dataDir: store.dir,
     }
   }
@@ -195,6 +205,23 @@ export function createRouter({ store, logger, adapter }) {
             contextWindow: Number(model.context?.contextWindow ?? 0) || undefined,
           })),
         })
+      }
+
+      if (method === 'GET' && routePath === '/credits') {
+        return send(200, { ok: true, ...(await collectCredits({ store })) })
+      }
+
+      if (method === 'POST' && routePath === '/checkin/config') {
+        const enabled = body.enabled === true
+        const time = normalizeTime(body.time)
+        if (time === null) return send(400, { error: '签到时间格式应为 HH:mm' })
+        const settings = store.updateSettings({ checkin: { enabled, time } })
+        return send(200, { ok: true, checkin: settings.checkin })
+      }
+
+      if (method === 'POST' && routePath === '/checkin/run') {
+        const result = await checkin.run({ trigger: 'manual' })
+        return send(200, result)
       }
 
       return send(404, { error: `未知接口 ${method} ${routePath}` })
@@ -297,6 +324,7 @@ export function apply(ctx, config = {}) {
   const logger = ctx.logger ?? console
   const store = createStore({ home: config.home ?? resolveDshHome() })
   const adapter = createAdapter({ store, logger })
+  const checkin = createCheckinRunner({ store, logger })
 
   const settingsNs = ctx.fiber?.entry?.options?.id ?? name
 
@@ -335,8 +363,16 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  const router = createRouter({ store, logger, adapter })
+  const router = createRouter({ store, logger, adapter, checkin })
   let mounted = 0
+
+  // 定时签到：只让真正完成了 adapter 注册的那个实例启动，避免重复实例各跑一份。
+  if (registrations.length > 0) {
+    ctx.effect(
+      () => startCheckinScheduler({ store, logger, runCheckin: options => checkin.run(options) }),
+      'trae-qoder: checkin scheduler',
+    )
+  }
 
   // 首选：共享 /api 通道的精确路由。桌面端没有 webServer，只有这条能生效。
   ctx.inject(['connection'], scoped => {

@@ -148,44 +148,85 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function AccountRows({ provider, rows, activeId, onSelect, onRemove, onRefresh, busy }) {
+    function formatCredits(item) {
+      if (item === undefined || item === null) return '—'
+      if (item.error) return `—（${item.error}）`
+      const value = Number(item.remaining)
+      if (!Number.isFinite(value)) return '—'
+      return Number.isInteger(value) ? String(value) : value.toFixed(1)
+    }
+
+    function creditsOf(credits, provider, id) {
+      const rows = credits?.[provider]
+      return Array.isArray(rows) ? rows.find(row => row.id === id) : undefined
+    }
+
+    function creditsTotal(credits, provider) {
+      const rows = credits?.[provider]
+      if (!Array.isArray(rows) || rows.length === 0) return null
+      const known = rows.filter(row => row.error === '' && Number.isFinite(Number(row.remaining)))
+      if (known.length === 0) return '—'
+      const sum = known.reduce((total, row) => total + Number(row.remaining), 0)
+      return Number.isInteger(sum) ? String(sum) : sum.toFixed(1)
+    }
+
+    function checkinLabel(row) {
+      if (row.status === 'ok') return row.amount > 0 ? `✓ 领取成功 +${row.amount}` : `✓ ${row.message || '已领取'}`
+      if (row.status === 'already') return row.message || '今日已领取'
+      if (row.status === 'unsupported') return row.message || '不支持'
+      return `失败：${row.message || '未知错误'}`
+    }
+
+    function formatTime(timestamp) {
+      const value = Number(timestamp)
+      if (!Number.isFinite(value) || value <= 0) return ''
+      return new Date(value).toLocaleString()
+    }
+
+    function AccountRows({ provider, rows, activeId, credits, creditsLoading, onSelect, onRemove, onRefresh, busy }) {
       if (rows.length === 0) return h('p', { style: S.hint }, '还没有账号。')
       return h('div', { style: { display: 'grid', gap: '8px' } },
-        rows.map(row => h('div', { key: row.id, style: S.account },
-          h('div', { style: S.accountText },
-            h('div', { style: S.name }, row.name || row.uid),
-            h('div', { style: S.subtle },
-              row.region === 'cn' ? '国内' : (row.region === 'global' ? '国际' : row.region),
-              row.uid ? ` · ${row.uid}` : '',
-              row.refreshable ? '' : ' · 不可续期',
+        rows.map(row => {
+          const item = creditsOf(credits, provider, row.id)
+          const creditsText = item === undefined && creditsLoading ? '查询中…' : formatCredits(item)
+          return h('div', { key: row.id, style: S.account },
+            h('div', { style: S.accountText },
+              h('div', { style: S.name }, row.name || row.uid),
+              h('div', { style: S.subtle },
+                row.region === 'cn' ? '国内' : (row.region === 'global' ? '国际' : row.region),
+                row.uid ? ` · ${row.uid}` : '',
+                row.refreshable ? '' : ' · 不可续期',
+              ),
+              h('div', { style: S.subtle }, `积分 ${creditsText}`),
             ),
-          ),
-          h('div', { style: S.row },
-            row.id === activeId ? h('span', { style: S.tag }, '使用中') : null,
-            h('button', {
-              type: 'button', style: S.ghost, disabled: busy !== '',
-              onClick: () => onSelect(provider, row.id),
-            }, '设为当前'),
-            h('button', {
-              type: 'button', style: S.ghost, disabled: busy !== '' || row.refreshable !== true,
-              onClick: () => onRefresh(provider, row.id),
-            }, '续期'),
-            h('button', {
-              type: 'button', style: S.ghost, disabled: busy !== '',
-              onClick: () => onRemove(provider, row.id),
-            }, '移除'),
-          ),
-        )),
+            h('div', { style: S.row },
+              row.id === activeId ? h('span', { style: S.tag }, '使用中') : null,
+              h('button', {
+                type: 'button', style: S.ghost, disabled: busy !== '',
+                onClick: () => onSelect(provider, row.id),
+              }, '设为当前'),
+              h('button', {
+                type: 'button', style: S.ghost, disabled: busy !== '' || row.refreshable !== true,
+                onClick: () => onRefresh(provider, row.id),
+              }, '续期'),
+              h('button', {
+                type: 'button', style: S.ghost, disabled: busy !== '',
+                onClick: () => onRemove(provider, row.id),
+              }, '移除'),
+            ),
+          )
+        }),
       )
     }
 
-    function TraeCard({ summary, busy, setBusy, setNotice, reload }) {
+    function TraeCard({ summary, credits, creditsLoading, busy, setBusy, setNotice, reload }) {
       const regions = summary?.providers?.trae?.regions ?? [{ id: 'cn', label: 'TRAE 国服（trae.cn）' }]
       const [region, setRegion] = useState(regions[0]?.id ?? 'cn')
       const [login, setLogin] = useState(null)
       const [callbackUrl, setCallbackUrl] = useState('')
       const accounts = summary?.accounts?.trae ?? []
       const activeId = summary?.accounts?.active?.trae ?? ''
+      const total = creditsTotal(credits, 'trae')
 
       const start = async () => {
         setBusy('trae-url'); setNotice('')
@@ -257,8 +298,9 @@ window.__ModuleLoader__.load({
           ),
         ) : null,
         h('div', { style: { height: '1px', background: 'var(--dsw-alias-border-l2, #e7e7ee)' } }),
+        total !== null ? h('p', { style: S.hint }, `积分合计：${total}`) : null,
         h(AccountRows, {
-          provider: 'trae', rows: accounts, activeId, busy,
+          provider: 'trae', rows: accounts, activeId, credits, creditsLoading, busy,
           onSelect: (provider, id) => act('/accounts/active', { provider, id }),
           onRemove: (provider, id) => act('/accounts/remove', { provider, id }),
           onRefresh: (provider, id) => act('/accounts/refresh', { provider, id }),
@@ -266,13 +308,14 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function QoderCard({ summary, busy, setBusy, setNotice, reload }) {
+    function QoderCard({ summary, credits, creditsLoading, busy, setBusy, setNotice, reload }) {
       const regions = summary?.providers?.qoder?.regions ?? [{ id: 'cn', label: 'Qoder 中国版（qoder.cn）' }]
       const [region, setRegion] = useState(regions[0]?.id ?? 'cn')
       const [pat, setPat] = useState('')
       const [device, setDevice] = useState(null)
       const accounts = summary?.accounts?.qoder ?? []
       const activeId = summary?.accounts?.active?.qoder ?? ''
+      const total = creditsTotal(credits, 'qoder')
 
       useEffect(() => {
         if (device === null) return undefined
@@ -372,8 +415,9 @@ window.__ModuleLoader__.load({
           h('p', { style: { ...S.notice, ...S.mono } }, device.url),
         ) : null,
         h('div', { style: { height: '1px', background: 'var(--dsw-alias-border-l2, #e7e7ee)' } }),
+        total !== null ? h('p', { style: S.hint }, `积分合计：${total}`) : null,
         h(AccountRows, {
-          provider: 'qoder', rows: accounts, activeId, busy,
+          provider: 'qoder', rows: accounts, activeId, credits, creditsLoading, busy,
           onSelect: (provider, id) => act('/accounts/active', { provider, id }),
           onRemove: (provider, id) => act('/accounts/remove', { provider, id }),
           onRefresh: (provider, id) => act('/accounts/refresh', { provider, id }),
@@ -381,8 +425,88 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function CheckinCard({ summary, busy, setBusy, setNotice, reload }) {
+      const cfg = summary?.checkin ?? {}
+      const [enabled, setEnabled] = useState(cfg.enabled === true)
+      const [time, setTime] = useState(typeof cfg.time === 'string' ? cfg.time : '09:00')
+
+      useEffect(() => {
+        setEnabled(cfg.enabled === true)
+        setTime(typeof cfg.time === 'string' ? cfg.time : '09:00')
+      }, [cfg.enabled, cfg.time])
+
+      const save = async () => {
+        setBusy('checkin-save'); setNotice('')
+        try {
+          await api('/checkin/config', { method: 'POST', body: { enabled, time } })
+          setNotice(enabled ? `已保存：每天 ${time} 自动签到。` : '已关闭定时签到。')
+          await reload()
+        } catch (error) {
+          setNotice(`保存签到设置失败：${error.message}`)
+        } finally {
+          setBusy('')
+        }
+      }
+
+      const runNow = async () => {
+        setBusy('checkin-run'); setNotice('')
+        try {
+          const value = await api('/checkin/run', { method: 'POST', body: {} })
+          const results = value.results ?? []
+          const okCount = results.filter(row => row.status === 'ok').length
+          setNotice(`签到完成：${okCount} 个账号领取成功，共 ${results.length} 个账号。`)
+          await reload()
+        } catch (error) {
+          setNotice(`签到失败：${error.message}`)
+        } finally {
+          setBusy('')
+        }
+      }
+
+      const results = Array.isArray(cfg.lastResults) ? cfg.lastResults : []
+      const triggerLabel = cfg.lastTrigger === 'schedule' ? '定时' : (cfg.lastTrigger === 'startup' ? '启动补签' : '手动')
+
+      return h('section', { style: S.card },
+        h('div', { style: S.head },
+          h('h3', { style: S.title }, '每日签到'),
+          h('label', { style: S.row },
+            h('input', {
+              type: 'checkbox', checked: enabled, disabled: busy !== '',
+              onChange: event => setEnabled(event.target.checked),
+            }),
+            h('span', { style: S.subtle }, enabled ? '定时开' : '定时关'),
+          ),
+        ),
+        h('p', { style: S.hint },
+          '到点自动领 TRAE 每日签到积分与 Qoder 每日 Credits。TRAE 仅国服支持，国际服会标注「不支持」。开启后 DSH 需保持运行。',
+        ),
+        h('div', { style: S.row },
+          h('input', {
+            type: 'time', style: S.input, value: time, disabled: busy !== '',
+            onChange: event => setTime(event.target.value),
+          }),
+          h('button', { type: 'button', style: S.primary, disabled: busy !== '', onClick: save },
+            busy === 'checkin-save' ? '保存中…' : '保存设置'),
+          h('button', { type: 'button', style: S.button, disabled: busy !== '', onClick: runNow },
+            busy === 'checkin-run' ? '签到中…' : '立即签到'),
+        ),
+        cfg.lastRunAt
+          ? h('p', { style: S.hint }, `上次运行：${formatTime(cfg.lastRunAt)}（${triggerLabel}）`)
+          : h('p', { style: S.hint }, '还没有运行过。'),
+        results.length > 0
+          ? h('div', { style: { display: 'grid', gap: '4px' } },
+              results.map((row, index) => h('div', { key: `${row.provider}-${row.id}-${index}`, style: S.subtle },
+                `${row.provider === 'trae' ? 'TRAE' : 'Qoder'} · ${row.name || row.id || '账号'}：${checkinLabel(row)}`,
+              )),
+            )
+          : null,
+      )
+    }
+
     function SettingsPage() {
       const [summary, setSummary] = useState(null)
+      const [credits, setCredits] = useState(null)
+      const [creditsLoading, setCreditsLoading] = useState(false)
       const [busy, setBusy] = useState('')
       const [notice, setNotice] = useState('')
       const [loadError, setLoadError] = useState('')
@@ -393,6 +517,15 @@ window.__ModuleLoader__.load({
           setLoadError('')
         } catch (error) {
           setLoadError(error.message)
+          return
+        }
+        // 积分要打上游，可能慢；先让账号信息渲染出来，积分随后补上。
+        setCreditsLoading(true)
+        try {
+          const next = await api('/credits').catch(() => null)
+          if (next !== null) setCredits(next)
+        } finally {
+          setCreditsLoading(false)
         }
       }, [])
 
@@ -409,11 +542,12 @@ window.__ModuleLoader__.load({
         loadError !== '' ? h('p', { style: { ...S.notice, ...S.error } }, `读取账号失败：${loadError}`) : null,
         notice !== '' ? h('p', { style: S.notice }, notice) : null,
         h('div', { style: S.grid },
-          h(TraeCard, { summary, busy, setBusy, setNotice, reload }),
-          h(QoderCard, { summary, busy, setBusy, setNotice, reload }),
+          h(TraeCard, { summary, credits, creditsLoading, busy, setBusy, setNotice, reload }),
+          h(QoderCard, { summary, credits, creditsLoading, busy, setBusy, setNotice, reload }),
+          h(CheckinCard, { summary, busy, setBusy, setNotice, reload }),
         ),
         h('p', { style: S.subtle },
-          '登录后，TRAE / Qoder 的模型会出现在模型选择器里。上游协议随时可能变化；不要把主账号用在这里。',
+          '登录后，TRAE / Qoder 的模型会出现在模型选择器里（Qoder 模型带计费倍率标签）。上游协议随时可能变化；不要把主账号用在这里。',
         ),
       )
     }

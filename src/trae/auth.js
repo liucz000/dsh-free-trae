@@ -24,6 +24,8 @@ export const REGIONS = {
     consoleHost: 'https://www.trae.cn',
     oauthHost: 'https://api.trae.com.cn',
     agentHost: 'https://trae-api-cn.mchost.guru',
+    ugHost: 'https://api.trae.cn',
+    userRegion: 'CN',
     clientId: 'en1oxy7wnw8j9n',
     pluginVersion: '2.3.62834',
     ideVersion: '0.1.52',
@@ -36,6 +38,9 @@ export const REGIONS = {
     consoleHost: 'https://www.trae.ai',
     oauthHost: 'https://ug-normal.trae.ai',
     agentHost: 'https://core-normal.trae.ai',
+    // 积分/签到协议只在国服实测过；国际服置空，调用处会明确报「不支持」而不是乱打上游。
+    ugHost: '',
+    userRegion: '',
     clientId: 'ono9krqynydwx5',
     pluginVersion: '2.3.62834',
     ideVersion: '0.1.52',

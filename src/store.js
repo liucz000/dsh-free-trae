@@ -23,6 +23,38 @@ function emptyState() {
   return { version: 1, active: { trae: '', qoder: '' }, trae: [], qoder: [] }
 }
 
+function emptySettings() {
+  return {
+    version: 1,
+    checkin: {
+      enabled: false,
+      time: '09:00',
+      lastDay: '',
+      lastRunAt: 0,
+      lastTrigger: '',
+      lastResults: [],
+    },
+  }
+}
+
+function normalizeSettings(value) {
+  const settings = emptySettings()
+  if (value === null || typeof value !== 'object') return settings
+  const checkin = value.checkin
+  if (checkin === null || typeof checkin !== 'object') return settings
+  settings.checkin.enabled = checkin.enabled === true
+  settings.checkin.time = typeof checkin.time === 'string' && /^\d{1,2}:\d{2}$/.test(checkin.time)
+    ? checkin.time
+    : '09:00'
+  settings.checkin.lastDay = typeof checkin.lastDay === 'string' ? checkin.lastDay : ''
+  settings.checkin.lastRunAt = Number.isFinite(Number(checkin.lastRunAt)) ? Number(checkin.lastRunAt) : 0
+  settings.checkin.lastTrigger = typeof checkin.lastTrigger === 'string' ? checkin.lastTrigger : ''
+  settings.checkin.lastResults = Array.isArray(checkin.lastResults)
+    ? checkin.lastResults.filter(row => row !== null && typeof row === 'object')
+    : []
+  return settings
+}
+
 function normalizeState(value) {
   const state = emptyState()
   if (value === null || typeof value !== 'object') return state
@@ -58,7 +90,9 @@ export function createStore({ home = resolveDshHome(), dirName = 'trae-qoder' } 
   const dir = path.join(home, dirName)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const file = path.join(dir, 'accounts.json')
+  const settingsFile = path.join(dir, 'settings.json')
   let cache = null
+  let settingsCache = null
 
   function read() {
     if (cache !== null) return cache
@@ -144,5 +178,40 @@ export function createStore({ home = resolveDshHome(), dirName = 'trae-qoder' } 
     }
   }
 
-  return { dir, file, read, write, list, current, add, update, remove, select, snapshot }
+  function readSettings() {
+    if (settingsCache !== null) return settingsCache
+    try {
+      settingsCache = normalizeSettings(JSON.parse(fs.readFileSync(settingsFile, 'utf8')))
+    } catch {
+      settingsCache = emptySettings()
+    }
+    return settingsCache
+  }
+
+  function writeSettings(next) {
+    settingsCache = normalizeSettings(next)
+    const tmp = `${settingsFile}.tmp-${process.pid}`
+    fs.writeFileSync(tmp, `${JSON.stringify(settingsCache, null, 2)}\n`, { mode: 0o600 })
+    fs.renameSync(tmp, settingsFile)
+    try { fs.chmodSync(settingsFile, 0o600) } catch { /* Windows 上无 POSIX 权限位 */ }
+    return settingsCache
+  }
+
+  /** 只读快照（深拷贝，调用方改不动缓存）。 */
+  function settings() {
+    return JSON.parse(JSON.stringify(readSettings()))
+  }
+
+  /** 合并写入；`checkin` 里只覆盖传入的键。 */
+  function updateSettings(patch) {
+    const current = readSettings()
+    const checkin = { ...current.checkin, ...(patch?.checkin ?? {}) }
+    return writeSettings({ ...current, ...patch, checkin })
+  }
+
+  return {
+    dir, file, settingsFile,
+    read, write, list, current, add, update, remove, select, snapshot,
+    settings, updateSettings,
+  }
 }

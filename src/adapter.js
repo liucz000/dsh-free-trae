@@ -43,6 +43,25 @@ function errorMessage(error) {
   return String(error)
 }
 
+/** 倍率 → 紧凑文本（整数不带小数，其余最多两位）。 */
+export function formatFactor(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return ''
+  return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(2)))
+}
+
+/**
+ * Qoder 计费倍率 → 模型选择器里的小标签。
+ * 免费（0）用 success，有倍率用 info，未知（null）不显示。
+ */
+export function priceBadge(priceFactor) {
+  if (priceFactor === null || priceFactor === undefined) return undefined
+  const number = Number(priceFactor)
+  if (!Number.isFinite(number) || number < 0) return undefined
+  if (number === 0) return { text: '免费', tone: 'success' }
+  return { text: `×${formatFactor(number)}`, tone: 'info' }
+}
+
 function isRetryable(error) {
   if (error instanceof HttpError) return error.status === 401 || error.status === 408 || error.status === 429 || error.status >= 500
   return /fetch failed|ECONN|ETIMEDOUT|socket|aborted/i.test(errorMessage(error))
@@ -144,15 +163,22 @@ export function createAdapter({ store, logger = console } = {}) {
     const models = account === null || account === undefined
       ? BUILTIN.map(entry => ({ ...entry, maxOutput: Math.min(32_000, entry.contextWindow) }))
       : await fetchCatalog(account)
-    return models.map(model => ({
-      provider,
-      id: model.id,
-      name: model.name,
-      description: model.priceFactor === 0
+    return models.map(model => {
+      const badge = priceBadge(model.priceFactor)
+      const description = model.priceFactor === 0
         ? 'Qoder 免费模型'
-        : (model.priceFactor === null ? 'Qoder 内置模型' : `Qoder 倍率 ${model.priceFactor}`),
-      inputModalities: ['text'],
-    }))
+        : (model.priceFactor === null || model.priceFactor === undefined
+          ? 'Qoder 内置模型'
+          : `Qoder 计费倍率 ×${formatFactor(model.priceFactor)}`)
+      return {
+        provider,
+        id: model.id,
+        name: model.name,
+        description,
+        inputModalities: ['text'],
+        ...(badge === undefined ? {} : { badge }),
+      }
+    })
   }
 
   async function resolveTrae(provider, model) {

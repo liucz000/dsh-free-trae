@@ -17,6 +17,21 @@ import { resolveModel as qoderResolve, BUILTIN } from '../src/qoder/models.js'
 import { HarnessEmitter, mapFinish, mapUsage } from '../src/emit.js'
 import { createStore, publicAccount } from '../src/store.js'
 import { readSse } from '../src/http.js'
+import { priceBadge } from '../src/adapter.js'
+import {
+  checkinSucceeded,
+  deviceIdFor,
+  marketUserIdFor,
+  parseCheckinStatus as parseTraeCheckin,
+  parseCredits as parseTraeCredits,
+  sessionIdFor,
+} from '../src/trae/credits.js'
+import {
+  parseCampaigns,
+  parseClaim,
+  parseCredits as parseQoderCredits,
+} from '../src/qoder/credits.js'
+import { isCheckinDue, localDay, normalizeTime, parseMinutes } from '../src/checkin.js'
 
 let passed = 0
 function test(name, fn) {
@@ -162,6 +177,104 @@ test('SSE 解析', async () => {
   assert.equal(frames[0].event, 'output')
   assert.equal(frames[0].data, '{"a":1}')
   assert.equal(frames[1].data, 'line1\nline2')
+})
+
+test('签到设置读写', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tq-set-'))
+  const store = createStore({ home })
+  assert.equal(store.settings().checkin.enabled, false)
+  assert.equal(store.settings().checkin.time, '09:00')
+  const next = store.updateSettings({ checkin: { enabled: true, time: '08:30' } })
+  assert.equal(next.checkin.enabled, true)
+  assert.equal(next.checkin.time, '08:30')
+  assert.equal(store.settings().checkin.time, '08:30')
+  assert.equal(fs.statSync(store.settingsFile).mode & 0o777, 0o600)
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+test('TRAE 设备身份派生', () => {
+  const one = deviceIdFor('u-1')
+  assert.match(one, /^\d{15}$/)
+  assert.equal(deviceIdFor('u-1'), one)
+  assert.notEqual(deviceIdFor('u-2'), one)
+  assert.match(sessionIdFor('u-1'), /^[0-9a-f]{64}$/)
+  assert.match(marketUserIdFor('u-1'), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+})
+
+test('TRAE 积分与签到解析', () => {
+  assert.deepEqual(
+    parseTraeCredits({ usage_summary: { total_amount: 100, consumed_amount: 40 } }),
+    { remaining: 60, exceeded: false },
+  )
+  assert.equal(parseTraeCredits({ usage_summary: {} }), null)
+  assert.equal(parseTraeCredits({}), null)
+  assert.deepEqual(
+    parseTraeCheckin({ checked_in: true, credits: 150, enable: true }),
+    { checkedIn: true, credits: 150, enable: true },
+  )
+  assert.equal(parseTraeCheckin({ code: 1001, enable: false }), null)
+  assert.equal(checkinSucceeded({ checkedIn: false }, { checkedIn: true }, 0), true)
+  assert.equal(checkinSucceeded({ checkedIn: true }, { checkedIn: true }, 0), false)
+  assert.equal(checkinSucceeded({ checkedIn: false }, { checkedIn: true }, 9004), false)
+  assert.equal(checkinSucceeded({ checkedIn: false }, null, 0), false)
+})
+
+test('Qoder 积分与活动解析', () => {
+  assert.deepEqual(parseQoderCredits({
+    userQuota: { remaining: 10 },
+    personalQuota: { remaining: 5 },
+    addOnQuota: { remaining: 2 },
+    isQuotaExceeded: false,
+  }), { remaining: 17, exceeded: false })
+  assert.deepEqual(
+    parseQoderCredits({ data: { organizationQuota: { remaining: 3, available: true } } }),
+    { remaining: 3, exceeded: false },
+  )
+  assert.deepEqual(
+    parseQoderCredits({ organizationQuota: { remaining: 3, available: false } }),
+    { remaining: 0, exceeded: false },
+  )
+
+  const list = parseCampaigns({ campaigns: [
+    { campaignId: 'c1', claimStatus: 'claimable', benefit: { kind: 'CREDITS', amount: 100 } },
+    { campaignKey: 'c2', claimStatus: 'CLAIMED', benefit: null },
+  ] })
+  assert.equal(list.campaigns.length, 2)
+  assert.equal(list.campaigns[0].claimable, true)
+  assert.equal(list.campaigns[0].grantsCredits, true)
+  assert.equal(list.campaigns[1].claimStatus, 'CLAIMED')
+  assert.equal(list.campaigns[1].benefitAmount, 0)
+
+  assert.deepEqual(
+    parseClaim({ status: 'CLAIMED', benefit: { amount: 100 } }),
+    { newly: true, amount: 100, status: 'CLAIMED' },
+  )
+  assert.deepEqual(
+    parseClaim({ status: 'CLAIMED', replayed: true, benefit: { amount: 100 } }),
+    { newly: false, amount: 0, status: 'CLAIMED' },
+  )
+})
+
+test('签到时间与到期判定', () => {
+  assert.equal(normalizeTime('9:05'), '09:05')
+  assert.equal(normalizeTime('23:59'), '23:59')
+  assert.equal(normalizeTime('24:00'), null)
+  assert.equal(normalizeTime('oops'), null)
+  assert.equal(parseMinutes('09:30'), 570)
+  const now = new Date(2026, 0, 2, 10, 0, 0)
+  assert.equal(localDay(now), '2026-01-02')
+  assert.equal(isCheckinDue({ enabled: true, time: '09:00', lastDay: '' }, now), true)
+  assert.equal(isCheckinDue({ enabled: true, time: '09:00', lastDay: '2026-01-02' }, now), false)
+  assert.equal(isCheckinDue({ enabled: true, time: '11:00', lastDay: '' }, now), false)
+  assert.equal(isCheckinDue({ enabled: false, time: '09:00', lastDay: '' }, now), false)
+})
+
+test('Qoder 模型倍率标签', () => {
+  assert.deepEqual(priceBadge(0), { text: '免费', tone: 'success' })
+  assert.deepEqual(priceBadge(0.5), { text: '×0.5', tone: 'info' })
+  assert.deepEqual(priceBadge(8), { text: '×8', tone: 'info' })
+  assert.equal(priceBadge(null), undefined)
+  assert.equal(priceBadge(undefined), undefined)
 })
 
 console.log(`\n全部通过（${passed} 项）。`)
