@@ -138,7 +138,25 @@ function toCatalogEntry(value) {
     contextWindow,
     reasoning: value.is_reasoning === true,
     priceFactor,
+    originalPriceFactor: originalPriceFactorOf(value),
   })
+}
+
+/**
+ * 上游若带原价（不同版本/渠道字段名不一），读出来给展示层画 `×原价→×现价`。
+ * 读不到返回 null —— 不猜原价。
+ */
+function originalPriceFactorOf(value) {
+  for (const raw of [
+    value.original_price_factor,
+    value.before_price_factor,
+    value.promotion?.beforePromotionPriceFactor,
+  ]) {
+    if (raw === undefined || raw === null) continue
+    const number = Number(raw)
+    if (Number.isFinite(number) && number >= 0) return number
+  }
+  return null
 }
 
 export function parseCatalog(text) {

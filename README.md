@@ -16,11 +16,12 @@
 | 续期 | refreshToken 轮换，临期自动续，401 强制续一次 | jrt / PAT / device refresh 三级尝试 |
 | 积分 | 可用积分查询（`ide_user_ent_usage`，仅国服） | 剩余额度查询（`quota/usage`，国内/国际） |
 | 签到 | 每日签到（`checkin_credits`，仅国服） | 每日 Credits 领取（`campaigns`，国内/国际） |
-| 计费倍率 | 官方文档公布的积分消耗速度（仅少数模型） | 模型选择器显示 `×0.5` / `免费` 标签 |
+| 计费倍率 | 目录里的实时倍率（`display_contact_config`），缺失回落官方文档 | 模型选择器显示 `×0.5` / `免费` 标签 |
 
-模型会以 provider `trae` / `qoder` 出现在 DSH 的模型选择器里，Qoder 模型带官方 `price_factor` 标签；
-TRAE 上游目录不返回价格，只有官方文档公布了少数模型的「积分消耗速度」，这些模型会带 `×0.4` 一类标签，
-其余不显示（不臆造 ×1）。
+模型会以 provider `trae` / `qoder` 出现在 DSH 的模型选择器里，都带计费倍率标签：
+Qoder 用官方 `price_factor`；TRAE 从目录的 `display_contact_config` 解出实时
+`consumption_rate.data.rate`，有活动折扣时显示 `×原价→×现价`。目录没给倍率的模型才回落
+官方文档公布的「积分消耗速度」，其余不显示（不臆造 ×1）。
 
 ## 安装
 
@@ -28,7 +29,7 @@ TRAE 上游目录不返回价格，只有官方文档公布了少数模型的「
 cd dsh-trae-qoder
 npm pack
 # 用你的 DSH 安装插件的方式安装生成的 tar 包，例如：
-dsh plugin install ./dsh-trae-qoder-0.2.2.tgz
+dsh plugin install ./dsh-trae-qoder-0.2.3.tgz
 ```
 
 也可以直接把这个目录放进 DSH 的插件目录，或用本地路径安装。安装后重启 DSH，设置页会出现 **TRAE / Qoder** 分区。
@@ -128,8 +129,8 @@ Qoder 目录解析与请求体、块事件收尾、账号库权限、SSE 拆帧�
 - 只在“还没吐出任何内容”时换号，且最多尝试 2 个账号；已经出字后失败就按错误收尾。
 - **TRAE 国际服不支持积分/签到**（ug 协议未实测，会明确标注）；Qoder 的每日领取取决于上游
   是否下发活动，空列表不等于出错。
-- TRAE 的倍率标签来自官方文档《内置模型限时折扣》的**基础积分消耗速度**，只有少数模型公布；
-  会员档位、忙时/闲时折扣会让实际消耗与标签不同。
+- TRAE 优先使用目录里的实时倍率（`display_contact_config.consumption_rate`），读到活动折扣时
+  显示 `×原价→×现价`；目录没给才回落官方文档的基础值。会员档位、忙时/闲时会改变实际消耗。
 - 定时签到依赖 DSH 进程常驻；进程被杀期间不会补跑，重新启动后会补一次。
 - Qoder 设备授权依赖 Host 内存里的 nonce/verifier；DSH 重启即失效。
 

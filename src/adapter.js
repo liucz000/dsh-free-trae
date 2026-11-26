@@ -62,6 +62,23 @@ export function priceBadge(priceFactor) {
   return { text: `×${formatFactor(number)}`, tone: 'info' }
 }
 
+/**
+ * 倍率展示文本：有原价且更高时写成 `×0.4→×0.2`，0 显示「免费」。
+ * 原价读不到就不画箭头，不猜。
+ */
+export function priceText(model) {
+  const raw = model?.priceFactor
+  if (raw === null || raw === undefined) return ''
+  const current = Number(raw)
+  if (!Number.isFinite(current) || current < 0) return ''
+  const originalRaw = model.originalPriceFactor
+  const original = Number(originalRaw)
+  const discounted = originalRaw !== null && originalRaw !== undefined
+    && Number.isFinite(original) && original > current
+  const now = current === 0 ? '免费' : `×${formatFactor(current)}`
+  return discounted ? `×${formatFactor(original)}→${now}` : now
+}
+
 function isRetryable(error) {
   if (error instanceof HttpError) return error.status === 401 || error.status === 408 || error.status === 429 || error.status >= 500
   return /fetch failed|ECONN|ETIMEDOUT|socket|aborted/i.test(errorMessage(error))
@@ -129,17 +146,23 @@ export function createAdapter({ store, logger = console } = {}) {
     return FALLBACK_MODELS.map(model => traeModelInfo(provider, model, description))
   }
 
-  /** TRAE 模型 → 宿主条目；官方公布了积分消耗速度的才带倍率标签。 */
+  /** TRAE 模型 → 宿主条目；有实时倍率用实时值，缺失回落官方文档。 */
   function traeModelInfo(provider, model, fallbackDescription) {
     const priceFactor = model.priceFactor ?? priceFactorFor(model.id)
+    const originalPriceFactor = model.originalPriceFactor ?? null
     const badge = priceBadge(priceFactor)
+    let description = fallbackDescription
+    if (priceFactor !== null && priceFactor !== undefined) {
+      const text = priceText({ priceFactor, originalPriceFactor })
+      description = Number(originalPriceFactor) > Number(priceFactor)
+        ? `TRAE 计费 ${text}（活动折扣中）`
+        : `TRAE 积分消耗 ${text}`
+    }
     return {
       provider,
       id: model.id,
       name: model.name,
-      description: priceFactor === null || priceFactor === undefined
-        ? fallbackDescription
-        : `TRAE 官方积分消耗 ${formatFactor(priceFactor)}×（基础值）`,
+      description,
       inputModalities: ['text'],
       ...(badge === undefined ? {} : { badge }),
     }
@@ -169,11 +192,10 @@ export function createAdapter({ store, logger = console } = {}) {
       : await fetchCatalog(account)
     return models.map(model => {
       const badge = priceBadge(model.priceFactor)
-      const description = model.priceFactor === 0
-        ? 'Qoder 免费模型'
-        : (model.priceFactor === null || model.priceFactor === undefined
-          ? 'Qoder 内置模型'
-          : `Qoder 计费倍率 ×${formatFactor(model.priceFactor)}`)
+      const text = priceText(model)
+      const description = text === ''
+        ? 'Qoder 内置模型'
+        : (text === '免费' ? 'Qoder 免费模型' : `Qoder 计费倍率 ${text}`)
       return {
         provider,
         id: model.id,

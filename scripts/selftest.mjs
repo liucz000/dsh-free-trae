@@ -13,12 +13,12 @@ import { selfCheck, encodeBody, swapOuterThirds, md5Hex, COSY_SIGNED_PATH } from
 import { parseCallbackUrl } from '../src/trae/auth.js'
 import { prepareBody as traePrepareBody } from '../src/trae/upstream.js'
 import { prepareBody as qoderPrepareBody } from '../src/qoder/upstream.js'
-import { resolveModel as qoderResolve, BUILTIN } from '../src/qoder/models.js'
-import { priceFactorFor } from '../src/trae/models.js'
+import { resolveModel as qoderResolve, BUILTIN, parseCatalog } from '../src/qoder/models.js'
+import { priceFactorFor, parseModels as parseTraeModels, parseContact } from '../src/trae/models.js'
 import { HarnessEmitter, mapFinish, mapUsage } from '../src/emit.js'
 import { createStore, publicAccount } from '../src/store.js'
 import { readSse } from '../src/http.js'
-import { priceBadge } from '../src/adapter.js'
+import { priceBadge, priceText } from '../src/adapter.js'
 import {
   checkinSucceeded,
   deviceIdFor,
@@ -292,6 +292,78 @@ test('TRAE 官方积分消耗速度表', () => {
   assert.equal(priceFactorFor('GLM-5.3'), 0.78)
   assert.equal(priceFactorFor('Kimi-K3'), null)
   assert.equal(priceFactorFor(''), null)
+})
+
+test('TRAE 实时倍率与折扣（display_contact_config）', () => {
+  const contact = parseContact({
+    display_contact_config: JSON.stringify({
+      consumption_rate: { enable: true, data: { rate: 0.2 } },
+      activity_discount: {
+        enable: true,
+        data: { current: { discount_type: 'activity', before_consumption_rate: 0.4, consumption_rate: 0.2 } },
+      },
+    }),
+  })
+  assert.deepEqual(contact, { priceFactor: 0.2, originalPriceFactor: 0.4 })
+
+  // 原价等于现价 / 没有折扣类型 → 不算折扣。
+  assert.deepEqual(parseContact({
+    display_contact_config: JSON.stringify({
+      consumption_rate: { data: { rate: 0.5 } },
+      activity_discount: { data: { current: { discount_type: 'none', before_consumption_rate: 0.5 } } },
+    }),
+  }), { priceFactor: 0.5, originalPriceFactor: null })
+
+  // 字段缺失 / 非法 JSON / 关闭 → 一律 null，不猜。
+  assert.equal(parseContact({}), null)
+  assert.equal(parseContact({ display_contact_config: '{' }), null)
+  assert.equal(parseContact({ display_contact_config: JSON.stringify({ consumption_rate: { enable: false, data: { rate: 0.2 } } }) }), null)
+
+  const models = parseTraeModels({
+    config_info_list: [{
+      config_name: 'seed-2.1-pro-0915',
+      config_source: 1,
+      display_config: { display_name: 'Seed 2.1 Pro', is_custom_model: false },
+      context_window_tokens: { dev: 1_000_000 },
+      model_detail_list: [{ max_input_tokens: 65_536 }],
+      display_contact_config: JSON.stringify({ consumption_rate: { data: { rate: 0.3 } } }),
+    }],
+  })
+  assert.equal(models.length, 1)
+  assert.equal(models[0].priceFactor, 0.3)
+  assert.equal(models[0].contextWindow, 1_000_000, '优先 context_window_tokens.dev')
+  // 文档公布的模型在目录没给倍率时回落静态表。
+  const fallback = parseTraeModels({
+    config_info_list: [{
+      config_name: 'glm-5.3',
+      config_source: 1,
+      display_config: { display_name: 'GLM-5.3', is_custom_model: false },
+      model_detail_list: [{ max_input_tokens: 200_000 }],
+    }],
+  })
+  assert.equal(fallback[0].priceFactor, 0.78)
+  assert.equal(fallback[0].contextWindow, 200_000)
+})
+
+test('倍率展示文本（含原价箭头）', () => {
+  assert.equal(priceText({ priceFactor: 0.5 }), '×0.5')
+  assert.equal(priceText({ priceFactor: 0 }), '免费')
+  assert.equal(priceText({ priceFactor: 0.2, originalPriceFactor: 0.4 }), '×0.4→×0.2')
+  assert.equal(priceText({ priceFactor: 0, originalPriceFactor: 0.1 }), '×0.1→免费')
+  assert.equal(priceText({ priceFactor: 0.5, originalPriceFactor: 0.5 }), '×0.5')
+  assert.equal(priceText({ priceFactor: null }), '')
+})
+
+test('Qoder 目录解析原价字段', () => {
+  const rows = parseCatalog(JSON.stringify({
+    models: [
+      { key: 'qmodel', display_name: 'Qwen3.7-Plus', price_factor: 0.04, original_price_factor: 0.1 },
+      { key: 'dfmodel', display_name: 'DeepSeek-Flash', price_factor: 0 },
+    ],
+  }))
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].originalPriceFactor, 0.1)
+  assert.equal(rows[1].originalPriceFactor, null)
 })
 
 console.log(`\n全部通过（${passed} 项）。`)
