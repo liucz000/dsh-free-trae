@@ -1,0 +1,55 @@
+{
+  "name": "dsh-trae-qoder",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "只做 TRAE（国服/国际）与 Qoder（国内/国际）两条登录渠道的 DSH 插件：账号登录、模型目录、对话转发。不包含其它渠道，不含免登录中转。",
+  "main": "./index.js",
+  "scripts": {
+    "selftest": "node scripts/selftest.mjs",
+    "smoke": "node scripts/smoke-host.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src",
+    "scripts",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "trae",
+    "qoder",
+    "llm-provider"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  }
+}
