@@ -26,6 +26,27 @@ export const FALLBACK_MODELS = [
   { id: 'step-5-preview', name: 'Step-5 Preview', contextWindow: 131_072, maxOutput: 32_768 },
 ]
 
+/**
+ * 官方文档《内置模型限时折扣》公布的「积分消耗速度」（倍，折扣前的基础值）。
+ *
+ * 上游 `get_detail_param` **不返回**价格字段，所以只能以官方文档为准：
+ * 只收录文档明确写出的模型，其余保持未知（不显示标签），绝不默认成 1.0。
+ * 这些值会随会员档位、忙时/闲时和限时活动变化，仅作选择模型时的相对参考。
+ */
+export const PRICE_FACTORS = Object.freeze({
+  'seed-2.1-turbo': 0.4,
+  'seed-code': 0.12,
+  'deepseek-v4.1-flash': 0.12,
+  'deepseek-v4-pro': 0.72,
+  'glm-5.3': 0.78,
+})
+
+/** 模型 id → 官方积分消耗速度；文档没公布返回 null。 */
+export function priceFactorFor(id) {
+  const key = String(id ?? '').trim().toLowerCase()
+  return Object.prototype.hasOwnProperty.call(PRICE_FACTORS, key) ? PRICE_FACTORS[key] : null
+}
+
 const cache = new Map()
 
 export function soloHeaders(region, token, uid, { stream = false } = {}) {
@@ -78,7 +99,13 @@ export function parseModels(root) {
     const detail = Array.isArray(entry.model_detail_list) ? entry.model_detail_list[0] : undefined
     let contextWindow = Number(detail?.max_input_tokens ?? 0)
     if (!Number.isFinite(contextWindow) || contextWindow <= 0) contextWindow = 131_072
-    out.push({ id, name, contextWindow, maxOutput: Math.min(32_768, contextWindow) })
+    out.push({
+      id,
+      name,
+      contextWindow,
+      maxOutput: Math.min(32_768, contextWindow),
+      priceFactor: priceFactorFor(id),
+    })
   }
   return out
 }

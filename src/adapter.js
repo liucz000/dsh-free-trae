@@ -16,7 +16,7 @@ import {
   ensureFresh as traeEnsureFresh,
   refreshAccount as traeRefreshAccount,
 } from './trae/auth.js'
-import { fetchModels as traeFetchModels, FALLBACK_MODELS } from './trae/models.js'
+import { fetchModels as traeFetchModels, FALLBACK_MODELS, priceFactorFor } from './trae/models.js'
 import { chatDeltas as traeChatDeltas, prepareBody as traePrepareBody } from './trae/upstream.js'
 import {
   ensureFresh as qoderEnsureFresh,
@@ -126,13 +126,23 @@ export function createAdapter({ store, logger = console } = {}) {
   }
 
   function fallbackTraeModels(provider, description) {
-    return FALLBACK_MODELS.map(model => ({
+    return FALLBACK_MODELS.map(model => traeModelInfo(provider, model, description))
+  }
+
+  /** TRAE 模型 → 宿主条目；官方公布了积分消耗速度的才带倍率标签。 */
+  function traeModelInfo(provider, model, fallbackDescription) {
+    const priceFactor = model.priceFactor ?? priceFactorFor(model.id)
+    const badge = priceBadge(priceFactor)
+    return {
       provider,
       id: model.id,
       name: model.name,
-      description,
+      description: priceFactor === null || priceFactor === undefined
+        ? fallbackDescription
+        : `TRAE 官方积分消耗 ${formatFactor(priceFactor)}×（基础值）`,
       inputModalities: ['text'],
-    }))
+      ...(badge === undefined ? {} : { badge }),
+    }
   }
 
   async function listTraeModels(provider) {
@@ -144,13 +154,7 @@ export function createAdapter({ store, logger = console } = {}) {
     }
     try {
       const models = await traeModelsFor(account)
-      return models.map(model => ({
-        provider,
-        id: model.id,
-        name: model.name,
-        description: 'TRAE 内置模型',
-        inputModalities: ['text'],
-      }))
+      return models.map(model => traeModelInfo(provider, model, 'TRAE 内置模型'))
     } catch (error) {
       logger.warn?.(`[trae-qoder] TRAE 模型目录拉取失败：${errorMessage(error)}`)
       // 目录接口对国际服不一定可用；至少把兜底模型列出来，别让选择器空着。

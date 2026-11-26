@@ -14,6 +14,7 @@ import { parseCallbackUrl } from '../src/trae/auth.js'
 import { prepareBody as traePrepareBody } from '../src/trae/upstream.js'
 import { prepareBody as qoderPrepareBody } from '../src/qoder/upstream.js'
 import { resolveModel as qoderResolve, BUILTIN } from '../src/qoder/models.js'
+import { priceFactorFor } from '../src/trae/models.js'
 import { HarnessEmitter, mapFinish, mapUsage } from '../src/emit.js'
 import { createStore, publicAccount } from '../src/store.js'
 import { readSse } from '../src/http.js'
@@ -275,6 +276,16 @@ test('Qoder 模型倍率标签', () => {
   assert.deepEqual(priceBadge(8), { text: '×8', tone: 'info' })
   assert.equal(priceBadge(null), undefined)
   assert.equal(priceBadge(undefined), undefined)
+})
+
+test('TRAE 官方积分消耗速度表', () => {
+  assert.equal(priceFactorFor('Seed-2.1-Turbo'), 0.4)
+  assert.equal(priceFactorFor('seed-code'), 0.12)
+  assert.equal(priceFactorFor('DeepSeek-V4.1-Flash'), 0.12)
+  assert.equal(priceFactorFor('DeepSeek-V4-Pro'), 0.72)
+  assert.equal(priceFactorFor('GLM-5.3'), 0.78)
+  assert.equal(priceFactorFor('Kimi-K3'), null)
+  assert.equal(priceFactorFor(''), null)
 })
 
 console.log(`\n全部通过（${passed} 项）。`)
