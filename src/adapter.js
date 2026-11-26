@@ -80,6 +80,8 @@ export function priceText(model) {
 }
 
 function isRetryable(error) {
+  // 排队/资源受限是账号级瞬时问题：换一个账号往往立刻可用。
+  if (error instanceof HttpError && error.queue === true) return true
   if (error instanceof HttpError) return error.status === 401 || error.status === 408 || error.status === 429 || error.status >= 500
   return /fetch failed|ECONN|ETIMEDOUT|socket|aborted/i.test(errorMessage(error))
 }

@@ -10,7 +10,7 @@
  * @module src/trae/upstream.js
  */
 
-import { HttpError, readSse, streamFetch } from '../http.js'
+import { HttpError, queueInfoOf, queueMessage, readSse, streamFetch } from '../http.js'
 import { DEFAULT_MODEL, regionOf } from './auth.js'
 import { soloHeaders } from './models.js'
 
@@ -138,7 +138,32 @@ export async function * chatDeltas({ body, account, signal }) {
   if (typeof account.accessToken !== 'string' || account.accessToken === '') {
     throw new HttpError('TRAE 账号没有 accessToken，请重新登录')
   }
-  const stream = await streamFetch(`${region.agentHost}${EP_CHAT}`, {
+  const url = `${region.agentHost}${EP_CHAT}`
+  const MAX_ATTEMPTS = 2
+  let emitted = false
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      for await (const delta of sendStream({ url, body, region, account, signal })) {
+        emitted = true
+        yield delta
+      }
+      return
+    } catch (error) {
+      // 排队（10605/RESOURCE_LIMIT）：还没吐字时最多再试一次；
+      // 上游要求等很久（如 60 秒）就不阻塞请求，抛带时间的友好错误让适配器换号或用户重试。
+      const retryable = !emitted
+        && error instanceof HttpError
+        && error.queue === true
+        && attempt < MAX_ATTEMPTS
+        && (error.retryAfterSeconds === 0 || error.retryAfterSeconds <= 15)
+      if (!retryable) throw error
+      await new Promise(resolve => setTimeout(resolve, error.retryAfterSeconds > 0 ? error.retryAfterSeconds * 1000 : 1000))
+    }
+  }
+}
+
+async function * sendStream({ url, body, region, account, signal }) {
+  const stream = await streamFetch(url, {
     method: 'POST',
     headers: soloHeaders(region, account.accessToken, account.uid, { stream: true }),
     body: JSON.stringify(body),
@@ -147,6 +172,15 @@ export async function * chatDeltas({ body, account, signal }) {
   try {
     if (!stream.response.ok) {
       const text = await stream.response.text().catch(() => '')
+      const info = queueInfoOf(text)
+      if (info !== null) {
+        throw new HttpError(queueMessage('TRAE', info), {
+          status: 200,
+          body: text.slice(0, 400),
+          queue: true,
+          retryAfterSeconds: info.retryAfterSeconds,
+        })
+      }
       throw new HttpError(`TRAE 上游 HTTP ${stream.response.status}`, {
         status: stream.response.status,
         body: text.slice(0, 300),
@@ -179,8 +213,18 @@ export async function * chatDeltas({ body, account, signal }) {
         case 'done':
           yield { finishReason: typeof payload.finish_reason === 'string' ? payload.finish_reason : 'stop' }
           break
-        case 'error':
+        case 'error': {
+          const info = queueInfoOf(payload)
+          if (info !== null) {
+            throw new HttpError(queueMessage('TRAE', info), {
+              status: 200,
+              body: frame.data.slice(0, 400),
+              queue: true,
+              retryAfterSeconds: info.retryAfterSeconds,
+            })
+          }
           throw new Error(`TRAE 上游错误 code=${payload.code ?? ''} message=${payload.message ?? ''}`)
+        }
         default:
           break
       }

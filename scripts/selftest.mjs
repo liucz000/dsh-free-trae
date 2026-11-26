@@ -17,7 +17,7 @@ import { resolveModel as qoderResolve, BUILTIN, parseCatalog } from '../src/qode
 import { priceFactorFor, parseModels as parseTraeModels, parseContact } from '../src/trae/models.js'
 import { HarnessEmitter, mapFinish, mapUsage } from '../src/emit.js'
 import { createStore, publicAccount } from '../src/store.js'
-import { readSse } from '../src/http.js'
+import { readSse, queueInfoOf, queueMessage } from '../src/http.js'
 import { priceBadge, priceText } from '../src/adapter.js'
 import {
   checkinSucceeded,
@@ -263,8 +263,29 @@ test('Qoder 积分与活动解析', () => {
   )
 })
 
-test('Qoder 每日活动判定', () => {
-  // UTC+8 09:59 还没刷新；10:00 之后才是今天这一轮。
+test('上游排队错误识别', () => {
+  const body = JSON.stringify({
+    code: '10605',
+    message: JSON.stringify({
+      errorCode: 0,
+      isQueued: true,
+      modelKey: 'dmodel',
+      retryAfterSeconds: 60,
+      subCode: 'RESOURCE_LIMIT',
+    }),
+  })
+  const info = queueInfoOf(body)
+  assert.equal(info.retryAfterSeconds, 60)
+  assert.equal(info.modelKey, 'dmodel')
+  const text = queueMessage('Qoder', info)
+  assert.ok(text.includes('排队'))
+  assert.ok(text.includes('60 秒'))
+  assert.ok(text.includes('dmodel'))
+  assert.equal(queueInfoOf('{"message":"普通错误"}'), null)
+  assert.equal(queueInfoOf({ statusCodeValue: 200 }), null)
+})
+
+test('Qoder 每日活动判定', () => {  // UTC+8 09:59 还没刷新；10:00 之后才是今天这一轮。
   assert.equal(campaignsRefreshedToday(Date.UTC(2026, 0, 2, 1, 59)), false)
   assert.equal(campaignsRefreshedToday(Date.UTC(2026, 0, 2, 2, 0)), true)
   const list = parseCampaigns({ campaigns: [

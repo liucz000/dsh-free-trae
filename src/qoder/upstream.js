@@ -11,7 +11,7 @@
  * @module src/qoder/upstream.js
  */
 
-import { HttpError, readSse, streamFetch } from '../http.js'
+import { HttpError, queueInfoOf, queueMessage, readSse, streamFetch } from '../http.js'
 import { machineOS, regionOf } from './auth.js'
 import {
   COSY_VERSION,
@@ -263,8 +263,28 @@ function toolFragments(delta, indexer) {
   return out
 }
 
-function looksQueued(text) {
-  return text.includes('RESOURCE_LIMIT') || text.includes('"code":"10605"') || text.includes('10605') || text.includes('"isQueued":true')
+/**
+ * 排队/资源受限统一抛 HttpError（带 queue 标记），让适配器换号或给出可行动提示。
+ * 上游可能把排队信息放在 HTTP body、信封 status 或 chunk.error 里，逐处检查。
+ */
+function queuedError(label, value, modelKey) {
+  const info = queueInfoOf(value)
+  if (info === null) return null
+  if (info.modelKey === '' && typeof modelKey === 'string') info.modelKey = modelKey
+  return new HttpError(queueMessage(label, info), {
+    status: 200,
+    body: typeof value === 'string' ? value.slice(0, 400) : '',
+    queue: true,
+    retryAfterSeconds: info.retryAfterSeconds,
+  })
+}
+
+function retryDelayMs(error, attempt) {
+  // 上游给了明确等待时间且不长时照办；60 秒这类长队列不阻塞请求，直接抛出让人重试。
+  if (error !== null && error.queue === true && error.retryAfterSeconds > 0 && error.retryAfterSeconds <= 20) {
+    return error.retryAfterSeconds * 1000
+  }
+  return Math.min(2000, 250 * 2 ** (attempt - 1))
 }
 
 /**
@@ -296,17 +316,24 @@ export async function * chatDeltas({ body, account, signal, jobToken }) {
     try {
       if (!stream.response.ok) {
         const text = await stream.response.text().catch(() => '')
-        lastError = new HttpError(
-          looksQueued(text)
-            ? `Qoder 模型「${modelKey}」当前排队/资源受限，请换模型或换账号`
-            : `Qoder 上游 HTTP ${stream.response.status}: ${text.slice(0, 200)}`,
-          { status: stream.response.status, body: text.slice(0, 400) },
-        )
-        if (stream.response.status === 401 || (!looksQueued(text) && stream.response.status < 500 && stream.response.status !== 408 && stream.response.status !== 429)) {
+        const queued = queuedError('Qoder', text, modelKey)
+        if (queued !== null) {
+          lastError = queued
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise(resolve => setTimeout(resolve, retryDelayMs(queued, attempt)))
+            continue
+          }
+          throw queued
+        }
+        lastError = new HttpError(`Qoder 上游 HTTP ${stream.response.status}: ${text.slice(0, 200)}`, {
+          status: stream.response.status,
+          body: text.slice(0, 400),
+        })
+        if (stream.response.status === 401 || (stream.response.status < 500 && stream.response.status !== 408 && stream.response.status !== 429)) {
           throw lastError
         }
         if (attempt < MAX_ATTEMPTS) {
-          await new Promise(resolve => setTimeout(resolve, Math.min(2000, 250 * 2 ** (attempt - 1))))
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs(null, attempt)))
           continue
         }
         throw lastError
@@ -328,8 +355,11 @@ export async function * chatDeltas({ body, account, signal, jobToken }) {
         const status = Number(envelope.statusCodeValue ?? 0)
         const envelopeBody = typeof envelope.body === 'string' ? envelope.body : ''
         if (status !== 0 && status !== 200) {
-          let message = ''
-          try { message = JSON.parse(envelopeBody)?.message ?? '' } catch { /* 忽略 */ }
+          let parsed
+          try { parsed = JSON.parse(envelopeBody) } catch { /* 忽略 */ }
+          const queued = queuedError('Qoder', parsed ?? envelopeBody, modelKey)
+          if (queued !== null) throw queued
+          const message = typeof parsed?.message === 'string' ? parsed.message : ''
           throw new Error(message !== '' ? message : `Qoder upstream status ${status}`)
         }
         if (envelopeBody === '') continue
@@ -340,6 +370,8 @@ export async function * chatDeltas({ body, account, signal, jobToken }) {
           continue
         }
         if (chunk?.error !== undefined && chunk.error !== null) {
+          const queued = queuedError('Qoder', chunk, modelKey)
+          if (queued !== null) throw queued
           throw new Error(String(chunk.error.message ?? 'Qoder upstream error'))
         }
         if (chunk?.usage !== undefined && chunk.usage !== null) yield { usage: chunk.usage }
@@ -361,6 +393,7 @@ export async function * chatDeltas({ body, account, signal, jobToken }) {
       if (error instanceof HttpError && error.status === 401) throw error
       lastError = error
       if (attempt >= MAX_ATTEMPTS) throw error
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs(error instanceof HttpError ? error : null, attempt)))
     } finally {
       stream.close()
     }

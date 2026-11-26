@@ -29,7 +29,7 @@ Qoder 用官方 `price_factor`；TRAE 从目录的 `display_contact_config` 解�
 cd dsh-trae-qoder
 npm pack
 # 用你的 DSH 安装插件的方式安装生成的 tar 包，例如：
-dsh plugin install ./dsh-trae-qoder-0.2.4.tgz
+dsh plugin install ./dsh-trae-qoder-0.2.5.tgz
 ```
 
 也可以直接把这个目录放进 DSH 的插件目录，或用本地路径安装。安装后重启 DSH，设置页会出现 **TRAE / Qoder** 分区。
@@ -136,6 +136,9 @@ Qoder 目录解析与请求体、块事件收尾、账号库权限、SSE 拆帧�
   显示 `×原价→×现价`；目录没给才回落官方文档的基础值。会员档位、忙时/闲时会改变实际消耗。
 - 定时签到依赖 DSH 进程常驻；进程被杀期间不会补跑，重新启动后会补一次。
 - Qoder 设备授权依赖 Host 内存里的 nonce/verifier；DSH 重启即失效。
+- 遇到 `RESOURCE_LIMIT` / `10605`：上游排队，插件会自动重试一次、并在多账号时换号；
+  如果是 60 秒级长队列会直接提示「约 N 秒后重试」，此时重发或换模型即可。
+  它也会让宿主的自动上下文压缩失败（报 “context compaction failed”），属于临时限流，不是账号坏了。
 
 ## 协议来源与致谢
 

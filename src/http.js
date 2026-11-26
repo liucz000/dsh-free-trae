@@ -5,12 +5,70 @@
  */
 
 export class HttpError extends Error {
-  constructor(message, { status = 0, body = '' } = {}) {
+  constructor(message, { status = 0, body = '', queue = false, retryAfterSeconds = 0 } = {}) {
     super(message)
     this.name = 'HttpError'
     this.status = status
     this.body = body
+    /** 上游排队/资源受限（可换号或稍后重试），不算真正的配置错误。 */
+    this.queue = queue
+    this.retryAfterSeconds = retryAfterSeconds
   }
+}
+
+/**
+ * 递归解析上游的排队/限流响应，兼容 `message` 是 JSON 字符串、`error` 嵌套等情况。
+ * 不是排队错误返回 null。
+ */
+export function queueInfoOf(value) {
+  const stack = [value]
+  for (let i = 0; i < 8 && stack.length > 0; i++) {
+    const node = stack.pop()
+    if (node === null || node === undefined) continue
+    if (typeof node === 'string') {
+      if (!/10605|RESOURCE_LIMIT|isQueued/.test(node)) continue
+      try {
+        stack.push(JSON.parse(node))
+      } catch { /* 纯文本，忽略 */ }
+      continue
+    }
+    if (typeof node !== 'object') continue
+    const code = String(node.code ?? node.errorCode ?? '')
+    const queued = node.isQueued === true
+      || String(node.subCode ?? '') === 'RESOURCE_LIMIT'
+      || String(node.sub_code ?? '') === 'RESOURCE_LIMIT'
+      || code === '10605'
+    if (queued) {
+      let retry = Number(node.retryAfterSeconds ?? node.retry_after_seconds ?? 0)
+      let modelKey = typeof node.modelKey === 'string' ? node.modelKey : ''
+      // 外层只有 code，真正的 retryAfter/modelKey 常塞在 message 字符串里。
+      if ((!Number.isFinite(retry) || retry <= 0 || modelKey === '') && typeof node.message === 'string') {
+        try {
+          const inner = JSON.parse(node.message)
+          if (inner !== null && typeof inner === 'object') {
+            const innerRetry = Number(inner.retryAfterSeconds ?? inner.retry_after_seconds ?? 0)
+            if ((!Number.isFinite(retry) || retry <= 0) && Number.isFinite(innerRetry) && innerRetry > 0) retry = innerRetry
+            if (modelKey === '' && typeof inner.modelKey === 'string') modelKey = inner.modelKey
+          }
+        } catch { /* 纯文本，忽略 */ }
+      }
+      return {
+        retryAfterSeconds: Number.isFinite(retry) && retry > 0 ? retry : 0,
+        modelKey,
+      }
+    }
+    for (const child of Object.values(node)) {
+      if (typeof child === 'string' || (child !== null && typeof child === 'object')) stack.push(child)
+    }
+  }
+  return null
+}
+
+/** 统一的排队错误文案：给出原因和大约多久后重试，而不是把整段 JSON 抛给用户。 */
+export function queueMessage(label, info) {
+  const model = info.modelKey !== '' ? `「${info.modelKey}」` : ''
+  const wait = info.retryAfterSeconds > 0 ? `，上游建议约 ${info.retryAfterSeconds} 秒后重试` : '，请稍后重试'
+  return `${label} 模型${model}当前排队 / 资源受限（RESOURCE_LIMIT）${wait}。这是临时限流，不是配置问题；也可换一个模型或账号`
 }
 
 function parseJson(text) {
