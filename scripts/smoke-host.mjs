@@ -3,7 +3,7 @@
  *
  * 覆盖两条挂载路径：
  *   1. 桌面端（Electron / IPC 桥）：只有 ctx.connection，走共享 /api 精确 Fetch 路由。
- *   2. Web 兜底：只有 ctx.webServer，走 /api/trae-qoder 前缀路由。
+ *   2. Web 兜底：只有 ctx.webServer，走 /api/free-trae 前缀路由。
  *
  * 运行：node scripts/smoke-host.mjs
  */
@@ -61,13 +61,14 @@ function makeCtx({ withWebServer, withConnection, duplicate = false }) {
     logger: { info() {}, warn() {}, error() {} },
     llm: {
       registerAdapter(providers, value) {
-        assert.deepEqual(providers, ['trae', 'qoder'])
+        assert.deepEqual(providers, ['trae'])
         if (duplicate) throw new Error(`an adapter for provider "${providers[0]}" is already registered`)
         adapter = value
         return () => {}
       },
       registerConfigurableProviders(rows) {
-        assert.equal(rows.length, 2)
+        assert.equal(rows.length, 1)
+        assert.equal(rows[0].provider, 'trae')
       },
     },
     inject(deps, callback) {
@@ -79,7 +80,7 @@ function makeCtx({ withWebServer, withConnection, duplicate = false }) {
       const disposer = fn()
       disposers.push(disposer)
     },
-    fiber: { entry: { options: { id: 'trae-qoder' } } },
+    fiber: { entry: { options: { id: 'free-trae' } } },
   }
 
   apply(ctx, { home })
@@ -90,13 +91,13 @@ function makeCtx({ withWebServer, withConnection, duplicate = false }) {
 // ── 1. 桌面端：只有 connection ────────────────────────────────────────────
 const desktop = makeCtx({ withWebServer: false, withConnection: true })
 assert.equal(desktop.routes.length, 0, '桌面端不该依赖 webServer')
-assert.equal(desktop.fetchRoutes.size, 13, `桌面端应注册 13 条精确路由，实际 ${desktop.fetchRoutes.size}`)
+assert.equal(desktop.fetchRoutes.size, 10, `桌面端应注册 10 条精确路由，实际 ${desktop.fetchRoutes.size}`)
 
 async function callFetch(pathname, { method = 'GET', body } = {}) {
-  const route = desktop.fetchRoutes.get(`/api/trae-qoder${pathname.split('?')[0]}`)
+  const route = desktop.fetchRoutes.get(`/api/free-trae${pathname.split('?')[0]}`)
   assert.ok(route !== undefined, `没有注册 ${pathname}`)
   assert.ok(route.methods.includes(method), `${pathname} 不接受 ${method}`)
-  const response = await route.fetch(new Request(`http://127.0.0.1:1/api/trae-qoder${pathname}`, {
+  const response = await route.fetch(new Request(`http://127.0.0.1:1/api/free-trae${pathname}`, {
     method,
     headers: body === undefined ? undefined : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -108,7 +109,7 @@ async function callFetch(pathname, { method = 'GET', body } = {}) {
 const dSummary = await callFetch('/summary')
 assert.equal(dSummary.status, 200)
 assert.equal(dSummary.json.accounts.trae.length, 0)
-assert.equal(dSummary.json.providers.qoder.regions.length, 2)
+assert.equal(dSummary.json.providers.trae.regions.length, 2)
 ok('桌面端 GET /summary')
 
 const dUrl = await callFetch('/trae/login/url', { method: 'POST', body: { region: 'sg' } })
@@ -116,15 +117,15 @@ assert.equal(dUrl.status, 200)
 assert.ok(dUrl.json.url.startsWith('https://www.trae.ai/authorization?'))
 ok('桌面端 POST /trae/login/url')
 
-const dModels = await callFetch('/models?provider=qoder')
+const dModels = await callFetch('/models')
 assert.equal(dModels.status, 200)
-assert.ok(dModels.json.models.length >= 16)
+assert.equal(dModels.json.provider, 'trae')
+assert.ok(dModels.json.models.length >= 4)
 ok('桌面端 GET /models')
 
 const dCredits = await callFetch('/credits')
 assert.equal(dCredits.status, 200)
 assert.deepEqual(dCredits.json.trae, [])
-assert.deepEqual(dCredits.json.qoder, [])
 ok('桌面端 GET /credits（空账号）')
 
 const dCheckinNoProvider = await callFetch('/checkin/config', { method: 'POST', body: { enabled: true, time: '09:00' } })
@@ -138,8 +139,7 @@ ok('桌面端 POST /checkin/config 非法时间 400')
 const dCheckin = await callFetch('/checkin/config', { method: 'POST', body: { provider: 'trae', enabled: false, time: '09:30' } })
 assert.equal(dCheckin.status, 200)
 assert.equal(dCheckin.json.checkin.trae.time, '09:30')
-assert.equal(dCheckin.json.checkin.qoder.time, '09:00')
-ok('桌面端 POST /checkin/config（分渠道）')
+ok('桌面端 POST /checkin/config')
 
 const dRun = await callFetch('/checkin/run', { method: 'POST', body: {} })
 assert.equal(dRun.status, 200)
@@ -150,8 +150,8 @@ const dBad = await callFetch('/trae/login', { method: 'POST', body: { region: 'c
 assert.equal(dBad.status, 400)
 ok('桌面端 POST /trae/login 缺回调地址时 400')
 
-const dBadJson = await desktop.fetchRoutes.get('/api/trae-qoder/trae/login/url').fetch(new Request(
-  'http://127.0.0.1:1/api/trae-qoder/trae/login/url',
+const dBadJson = await desktop.fetchRoutes.get('/api/free-trae/trae/login/url').fetch(new Request(
+  'http://127.0.0.1:1/api/free-trae/trae/login/url',
   { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{oops' },
 ))
 assert.equal(dBadJson.status, 400)
@@ -162,12 +162,12 @@ const web = makeCtx({ withWebServer: true, withConnection: false })
 const route = web.routes[0]
 assert.ok(route !== undefined, '没有注册 webServer 路由')
 assert.equal(route.kind, 'prefix')
-assert.equal(route.path, '/api/trae-qoder')
+assert.equal(route.path, '/api/free-trae')
 ok('Web 兜底注册前缀路由')
 
 const server = http.createServer(route.handler)
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-const base = `http://127.0.0.1:${server.address().port}/api/trae-qoder`
+const base = `http://127.0.0.1:${server.address().port}/api/free-trae`
 
 async function call(pathname, { method = 'GET', body } = {}) {
   const response = await fetch(`${base}${pathname}`, {
@@ -182,16 +182,6 @@ async function call(pathname, { method = 'GET', body } = {}) {
 const wSummary = await call('/summary')
 assert.equal(wSummary.status, 200)
 ok('GET /summary')
-
-const device = await call('/qoder/login/url', { method: 'POST', body: { region: 'global' } })
-assert.equal(device.status, 200)
-assert.ok(device.json.url.startsWith('https://qoder.com/device/selectAccounts?'))
-assert.ok(typeof device.json.sessionId === 'string')
-ok('POST /qoder/login/url')
-
-const poll = await call(`/qoder/login/poll?id=${encodeURIComponent('nope')}`)
-assert.equal(poll.status, 404)
-ok('GET /qoder/login/poll 未知会话 404')
 
 const unknown = await call('/nope')
 assert.equal(unknown.status, 404)

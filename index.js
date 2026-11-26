@@ -1,22 +1,18 @@
 /**
- * dsh-trae-qoder — Host 半身。
+ * free-trae — Host 半身。
  *
- * 只做两条渠道：
- *   - trae  : TRAE 国服 / 国际服（浏览器授权 + 手动粘贴回调）
- *   - qoder : Qoder 国内 / 国际（PAT 或浏览器设备授权）
+ * 只做一条渠道：TRAE 国服 / 国际服（浏览器授权 + 手动粘贴回调）。
  *
  * 不包含其它任何渠道、任何中转/免登录池。账号与 token 只落在
- * `~/.dsh/trae-qoder/accounts.json`（0600），HTTP 接口只返回掩码视图。
+ * `~/.dsh/free-trae/accounts.json`（0600），HTTP 接口只返回掩码视图。
  *
  * 设置页的接口有两条挂载路径，二选一都可用：
  *   1. `ctx.connection.fetch`：共享 `/api` 通道上的精确 Fetch 路由。Web 与桌面端
  *      （Electron 走 IPC 桥，不提供 webServer）都走这条。
- *   2. `ctx.webServer`：`/api/trae-qoder` 前缀路由，作为没有 connection 时的兜底。
+ *   2. `ctx.webServer`：`/api/free-trae` 前缀路由，作为没有 connection 时的兜底。
  *
- * @module dsh-trae-qoder
+ * @module free-trae
  */
-
-import crypto from 'node:crypto'
 
 import { createAdapter } from './src/adapter.js'
 import { createStore, resolveDshHome } from './src/store.js'
@@ -27,15 +23,6 @@ import {
   refreshAccount as traeRefreshAccount,
 } from './src/trae/auth.js'
 import { clearModelCache } from './src/trae/models.js'
-import {
-  REGIONS as QODER_REGIONS,
-  buildAuthUrl as buildQoderAuthUrl,
-  createDeviceSession,
-  loginWithPat as qoderLoginWithPat,
-  pollDeviceSession,
-  refreshAccount as qoderRefreshAccount,
-} from './src/qoder/auth.js'
-import { clearCatalogCache } from './src/qoder/models.js'
 import { publicAccount } from './src/store.js'
 import {
   collectCredits,
@@ -43,11 +30,10 @@ import {
   normalizeTime,
   startCheckinScheduler,
 } from './src/checkin.js'
-export const name = 'trae-qoder'
+export const name = 'free-trae'
 export const inject = ['llm']
 
-const API_PREFIX = '/api/trae-qoder'
-const DEVICE_TTL_MS = 10 * 60_000
+const API_PREFIX = '/api/free-trae'
 const MAX_BODY_BYTES = 1 << 20
 
 /** 设置页用到的全部接口：路径后缀 → 允许的方法。 */
@@ -55,9 +41,6 @@ const ENDPOINTS = [
   { path: '/summary', methods: ['GET'] },
   { path: '/trae/login/url', methods: ['POST'] },
   { path: '/trae/login', methods: ['POST'] },
-  { path: '/qoder/login/pat', methods: ['POST'] },
-  { path: '/qoder/login/url', methods: ['POST'] },
-  { path: '/qoder/login/poll', methods: ['GET'] },
   { path: '/accounts/active', methods: ['POST'] },
   { path: '/accounts/remove', methods: ['POST'] },
   { path: '/accounts/refresh', methods: ['POST'] },
@@ -84,26 +67,21 @@ function parseBody(text) {
   }
 }
 
+/** 只接受 trae；其它值返回空串。 */
+function providerOf(value) {
+  return value === 'trae' ? 'trae' : ''
+}
+
 /**
  * 与传输方式无关的路由：输入方法、路径、查询串和已解析的请求体，输出状态码与 JSON。
  * @param {{ store: object, logger: object, adapter: object }} deps
  */
 export function createRouter({ store, logger, adapter, checkin }) {
-  const deviceSessions = new Map()
-
-  function sweepSessions() {
-    const now = Date.now()
-    for (const [id, session] of deviceSessions) {
-      if (now - session.createdAt > DEVICE_TTL_MS) deviceSessions.delete(id)
-    }
-  }
-
   function summary() {
     return {
       ok: true,
       providers: {
         trae: { label: 'TRAE', regions: regionList(TRAE_REGIONS) },
-        qoder: { label: 'Qoder', regions: regionList(QODER_REGIONS) },
       },
       accounts: store.snapshot(),
       checkin: store.settings().checkin,
@@ -135,66 +113,31 @@ export function createRouter({ store, logger, adapter, checkin }) {
         return send(200, { ok: true, account: publicAccount('trae', account), summary: summary() })
       }
 
-      if (method === 'POST' && routePath === '/qoder/login/pat') {
-        const region = typeof body.region === 'string' ? body.region : 'cn'
-        if (!(region in QODER_REGIONS)) return send(400, { error: `未知区域 ${region}` })
-        const pat = typeof body.pat === 'string' ? body.pat : ''
-        const account = await qoderLoginWithPat(pat, region)
-        store.add('qoder', account)
-        clearCatalogCache()
-        return send(200, { ok: true, account: publicAccount('qoder', account), summary: summary() })
-      }
-
-      if (method === 'POST' && routePath === '/qoder/login/url') {
-        const region = typeof body.region === 'string' ? body.region : 'cn'
-        if (!(region in QODER_REGIONS)) return send(400, { error: `未知区域 ${region}` })
-        sweepSessions()
-        const session = createDeviceSession(region)
-        const id = crypto.randomUUID()
-        deviceSessions.set(id, session)
-        return send(200, { ok: true, sessionId: id, region, url: buildQoderAuthUrl(session) })
-      }
-
-      if (method === 'GET' && routePath === '/qoder/login/poll') {
-        sweepSessions()
-        const id = query.get('id') ?? ''
-        const session = deviceSessions.get(id)
-        if (session === undefined) return send(404, { error: '授权会话已过期，请重新发起' })
-        const result = await pollDeviceSession(session)
-        if (result.pending === true) return send(200, { ok: true, pending: true })
-        store.add('qoder', result.account)
-        deviceSessions.delete(id)
-        clearCatalogCache()
-        return send(200, { ok: true, pending: false, account: publicAccount('qoder', result.account), summary: summary() })
-      }
-
       if (method === 'POST' && routePath === '/accounts/active') {
-        const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
-        if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
+        const provider = providerOf(body.provider)
+        if (provider === '') return send(400, { error: 'provider 必须是 trae' })
         if (!store.select(provider, String(body.id ?? ''))) return send(404, { error: '账号不存在' })
         return send(200, summary())
       }
 
       if (method === 'POST' && routePath === '/accounts/remove') {
-        const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
-        if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
+        const provider = providerOf(body.provider)
+        if (provider === '') return send(400, { error: 'provider 必须是 trae' })
         const removed = store.remove(provider, String(body.id ?? ''))
         return send(removed ? 200 : 404, removed ? summary() : { error: '账号不存在' })
       }
 
       if (method === 'POST' && routePath === '/accounts/refresh') {
-        const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
-        if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
+        const provider = providerOf(body.provider)
+        if (provider === '') return send(400, { error: 'provider 必须是 trae' })
         const account = store.list(provider).find(row => row.id === String(body.id ?? ''))
         if (account === undefined) return send(404, { error: '账号不存在' })
-        const updated = provider === 'trae'
-          ? await traeRefreshAccount(account, { store })
-          : await qoderRefreshAccount(account, { store })
+        const updated = await traeRefreshAccount(account, { store })
         return send(200, { ok: true, account: publicAccount(provider, updated), summary: summary() })
       }
 
       if (method === 'GET' && routePath === '/models') {
-        const provider = query.get('provider') === 'qoder' ? 'qoder' : 'trae'
+        const provider = 'trae'
         const models = await adapter.listModels(provider)
         return send(200, {
           ok: true,
@@ -212,8 +155,8 @@ export function createRouter({ store, logger, adapter, checkin }) {
       }
 
       if (method === 'POST' && routePath === '/checkin/config') {
-        const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
-        if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
+        const provider = providerOf(body.provider)
+        if (provider === '') return send(400, { error: 'provider 必须是 trae' })
         const enabled = body.enabled === true
         const time = normalizeTime(body.time)
         if (time === null) return send(400, { error: '签到时间格式应为 HH:mm' })
@@ -222,7 +165,7 @@ export function createRouter({ store, logger, adapter, checkin }) {
       }
 
       if (method === 'POST' && routePath === '/checkin/run') {
-        const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
+        const provider = providerOf(body.provider)
         const result = await checkin.run({
           trigger: 'manual',
           ...(provider === '' ? {} : { providers: [provider] }),
@@ -232,7 +175,7 @@ export function createRouter({ store, logger, adapter, checkin }) {
 
       return send(404, { error: `未知接口 ${method} ${routePath}` })
     } catch (error) {
-      logger.warn?.(`[trae-qoder] ${method} ${routePath} 失败：${textOf(error)}`)
+      logger.warn?.(`[free-trae] ${method} ${routePath} 失败：${textOf(error)}`)
       const status = Number(error?.status) >= 400 && Number(error?.status) < 600 ? Number(error.status) : 400
       return send(status, { error: textOf(error) })
     }
@@ -335,38 +278,22 @@ export function apply(ctx, config = {}) {
   const settingsNs = ctx.fiber?.entry?.options?.id ?? name
 
   // 同一个包可能在组合里出现两次（旧版本残留、安装器额外插了一行等）。
-  // registerAdapter / registerConfigurableProviders 都是「全有或全无」：只要一条 provider
-  // 被别的实例占着，整批就抛错，另一条也会一起丢掉。所以整批失败时退化成逐个注册，
-  // 让没被占用的那条照常工作。
+  // registerAdapter / registerConfigurableProviders 都是「全有或全无」：provider 已被
+  // 别的实例占着就会抛错，这里跳过即可，让本实例的其它能力照常工作。
   const registrations = []
   try {
-    registrations.push(ctx.llm.registerAdapter(['trae', 'qoder'], adapter))
-  } catch (batchError) {
-    logger.warn?.(`[trae-qoder] 整批注册 LLM 适配器失败，改为逐个注册：${textOf(batchError)}`)
-    for (const provider of ['trae', 'qoder']) {
-      try {
-        registrations.push(ctx.llm.registerAdapter([provider], adapter))
-      } catch (error) {
-        logger.warn?.(`[trae-qoder] 适配器 provider「${provider}」已被占用，跳过：${textOf(error)}`)
-      }
-    }
+    registrations.push(ctx.llm.registerAdapter(['trae'], adapter))
+  } catch (error) {
+    logger.warn?.(`[free-trae] 适配器 provider「trae」已被占用，跳过：${textOf(error)}`)
   }
 
   const directoryEntries = [
     { provider: 'trae', displayName: 'TRAE', settingsNs, settingsPath: [] },
-    { provider: 'qoder', displayName: 'Qoder', settingsNs, settingsPath: [] },
   ]
   try {
     ctx.llm.registerConfigurableProviders?.(directoryEntries)
-  } catch (batchError) {
-    logger.warn?.(`[trae-qoder] 整批注册模型页条目失败，改为逐个注册：${textOf(batchError)}`)
-    for (const entry of directoryEntries) {
-      try {
-        ctx.llm.registerConfigurableProviders?.([entry])
-      } catch (error) {
-        logger.warn?.(`[trae-qoder] 模型页条目「${entry.provider}」已被占用，跳过：${textOf(error)}`)
-      }
-    }
+  } catch (error) {
+    logger.warn?.(`[free-trae] 模型页条目「trae」已被占用，跳过：${textOf(error)}`)
   }
 
   const router = createRouter({ store, logger, adapter, checkin })
@@ -376,7 +303,7 @@ export function apply(ctx, config = {}) {
   if (registrations.length > 0) {
     ctx.effect(
       () => startCheckinScheduler({ store, logger, runCheckin: options => checkin.run(options) }),
-      'trae-qoder: checkin scheduler',
+      'free-trae: checkin scheduler',
     )
   }
 
@@ -396,13 +323,13 @@ export function apply(ctx, config = {}) {
             fetch: handler,
           })
         } catch (error) {
-          logger.warn?.(`[trae-qoder] 路由 ${path} 已被占用：${textOf(error)}`)
+          logger.warn?.(`[free-trae] 路由 ${path} 已被占用：${textOf(error)}`)
           return () => {}
         }
-      }, `trae-qoder: ${path}`)
+      }, `free-trae: ${path}`)
       mounted += 1
     }
-    logger.info?.(`trae-qoder: 设置接口挂在共享通道 ${API_PREFIX}`)
+    logger.info?.(`free-trae: 设置接口挂在共享通道 ${API_PREFIX}`)
   })
 
   // 兜底：没有 connection 的宿主（例如精简 Web 组合）用 webServer 前缀路由。
@@ -412,16 +339,16 @@ export function apply(ctx, config = {}) {
       try {
         return server.register({ kind: 'prefix', path: API_PREFIX, handler: httpHandler(router) })
       } catch (error) {
-        logger.warn?.(`[trae-qoder] 前缀路由 ${API_PREFIX} 已被占用：${textOf(error)}`)
+        logger.warn?.(`[free-trae] 前缀路由 ${API_PREFIX} 已被占用：${textOf(error)}`)
         return () => {}
       }
-    }, 'trae-qoder: settings API')
-    if (mounted === 0) logger.info?.(`trae-qoder: 设置接口挂在 ${API_PREFIX}`)
+    }, 'free-trae: settings API')
+    if (mounted === 0) logger.info?.(`free-trae: 设置接口挂在 ${API_PREFIX}`)
   })
 
   ctx.effect(() => () => {
     for (const registration of registrations) {
       try { registration?.() } catch { /* 宿主已在拆卸 */ }
     }
-  }, 'trae-qoder: adapter routes')
+  }, 'free-trae: adapter routes')
 }

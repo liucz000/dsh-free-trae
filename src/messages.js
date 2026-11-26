@@ -153,7 +153,7 @@ export function toOpenAiMessages(messages) {
 /**
  * 工具定义：宿主给的是 {name, description, parameters} 或 {function:{...}}。
  *
- * TRAE 要求 `parameters` 是 JSON 字符串；Qoder 直接吃对象。两种口径由调用方决定，
+ * TRAE 要求 `parameters` 是 JSON 字符串。由调用方决定是否 stringify，
  * 不要在这里统一 —— 上游对字段类型的容忍度不一样。
  */
 export function toToolDefs(tools, { stringify = false } = {}) {

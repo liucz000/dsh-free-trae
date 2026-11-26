@@ -1,9 +1,9 @@
 {
-  "name": "dsh-trae-qoder",
-  "version": "0.2.5",
+  "name": "free-trae",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
-  "description": "只做 TRAE（国服/国际）与 Qoder（国内/国际）两条登录渠道的 DSH 插件：账号登录、模型目录、对话转发。不包含其它渠道，不含免登录中转。",
+  "description": "只做 TRAE（国服/国际）的 DSH 插件：账号登录、模型目录、对话转发、积分与每日签到。不包含其它渠道，不含免登录中转。",
   "main": "./index.js",
   "scripts": {
     "selftest": "node scripts/selftest.mjs",
@@ -29,7 +29,6 @@
     "dsh-plugin",
     "deepseek-harness",
     "trae",
-    "qoder",
     "llm-provider"
   ],
   "engines": {

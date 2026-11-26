@@ -9,11 +9,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { selfCheck, encodeBody, swapOuterThirds, md5Hex, COSY_SIGNED_PATH } from '../src/qoder/cosy.js'
 import { parseCallbackUrl } from '../src/trae/auth.js'
 import { prepareBody as traePrepareBody } from '../src/trae/upstream.js'
-import { prepareBody as qoderPrepareBody } from '../src/qoder/upstream.js'
-import { resolveModel as qoderResolve, BUILTIN, parseCatalog } from '../src/qoder/models.js'
 import { priceFactorFor, parseModels as parseTraeModels, parseContact } from '../src/trae/models.js'
 import { HarnessEmitter, mapFinish, mapUsage } from '../src/emit.js'
 import { createStore, publicAccount } from '../src/store.js'
@@ -27,12 +24,6 @@ import {
   parseCredits as parseTraeCredits,
   sessionIdFor,
 } from '../src/trae/credits.js'
-import {
-  campaignsRefreshedToday,
-  parseCampaigns,
-  parseClaim,
-  parseCredits as parseQoderCredits,
-} from '../src/qoder/credits.js'
 import { isCheckinDue, localDay, normalizeTime, parseMinutes } from '../src/checkin.js'
 
 let passed = 0
@@ -41,18 +32,6 @@ function test(name, fn) {
   passed += 1
   console.log(`ok ${passed} - ${name}`)
 }
-
-test('cosy 自检（base64/换位/RSA/AES/签名）', () => {
-  assert.equal(selfCheck(), true)
-})
-
-test('换位是自反的', () => {
-  const raw = Buffer.from('0123456789abcdef', 'ascii')
-  assert.deepEqual(swapOuterThirds(swapOuterThirds(raw)), raw)
-  assert.equal(encodeBody(Buffer.from('abc', 'ascii')).length, 4)
-  assert.equal(md5Hex(''), 'd41d8cd98f00b204e9800998ecf8427e')
-  assert.ok(COSY_SIGNED_PATH.startsWith('/api/v2/'))
-})
 
 test('TRAE 回调解析', () => {
   const userInfo = encodeURIComponent(JSON.stringify({ UserID: 'u-1', ScreenName: 'Alice' }))
@@ -81,44 +60,6 @@ test('TRAE 请求体改写', () => {
   assert.equal(body.messages[1].tool_calls[0].function, undefined)
   assert.equal(typeof body.tools[0].function.parameters, 'string')
   assert.equal(body.tool_choice, 'f')
-})
-
-test('Qoder 模型解析', () => {
-  assert.equal(qoderResolve('auto').id, 'auto')
-  assert.equal(qoderResolve('DeepSeek-V4-Flash').id, 'dfmodel')
-  assert.equal(qoderResolve('Kimi-K3').id, 'kmodel_latest')
-  assert.equal(qoderResolve('unknown-x').id, 'unknown-x')
-  assert.equal(qoderResolve('').id, 'auto')
-  assert.ok(BUILTIN.some(entry => entry.id === 'qmodel_38max'))
-})
-
-test('Qoder 请求体结构', () => {
-  const account = { uid: 'u-1', region: 'cn', organizationId: 'org', organizationTags: ['t'], dataPolicyAgreed: true }
-  const body = qoderPrepareBody({
-    model: 'auto',
-    messages: [
-      { role: 'system', content: 'sys' },
-      { role: 'user', content: 'hello' },
-      { role: 'assistant', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'f', arguments: '{}' } }] },
-    ],
-    tools: [{ type: 'function', function: { name: 'f', description: '', parameters: '{"type":"object"}' } }],
-    max_tokens: 100,
-    reasoning_effort: 'minimal',
-    temperature: 0.2,
-  }, account)
-  assert.equal(body.business.product, 'cli')
-  assert.equal(body.business.version, '1.1.74')
-  assert.equal(body.model_config.key, 'auto')
-  assert.equal(body.model_config.is_reasoning, false)
-  assert.equal(body.system, 'sys')
-  assert.equal(body.messages[0].role, 'user')
-  assert.ok(body.messages[0].contents[0].cache_control !== undefined)
-  assert.equal(body.parameters.max_tokens, 100)
-  assert.equal(body.parameters.reasoning_effort, 'low')
-  assert.equal(body.parameters.temperature, 0.2)
-  assert.equal(body.tools.length, 1)
-  assert.equal(body.stream, true)
-  assert.equal(body.session_id.length, 36)
 })
 
 test('块事件发射与收尾', () => {
@@ -185,18 +126,17 @@ test('签到设置读写', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tq-set-'))
   const store = createStore({ home })
   assert.equal(store.settings().checkin.trae.enabled, false)
-  assert.equal(store.settings().checkin.qoder.time, '09:00')
+  assert.equal(store.settings().checkin.trae.time, '09:00')
   const next = store.updateSettings({ checkin: { trae: { enabled: true, time: '08:30' } } })
   assert.equal(next.checkin.trae.enabled, true)
   assert.equal(next.checkin.trae.time, '08:30')
-  assert.equal(next.checkin.qoder.enabled, false)
   assert.equal(store.settings().checkin.trae.time, '08:30')
   assert.equal(fs.statSync(store.settingsFile).mode & 0o777, 0o600)
-  // 旧版扁平结构读入时迁移成两渠道各一份。
+  // 旧版扁平结构读入时迁移成 trae 这一份。
   fs.writeFileSync(store.settingsFile, JSON.stringify({ checkin: { enabled: true, time: '07:10', lastDay: '2026-01-02' } }))
   const fresh = createStore({ home })
   assert.equal(fresh.settings().checkin.trae.enabled, true)
-  assert.equal(fresh.settings().checkin.qoder.time, '07:10')
+  assert.equal(fresh.settings().checkin.trae.time, '07:10')
   fs.rmSync(home, { recursive: true, force: true })
 })
 
@@ -227,42 +167,6 @@ test('TRAE 积分与签到解析', () => {
   assert.equal(checkinSucceeded({ checkedIn: false }, null, 0), false)
 })
 
-test('Qoder 积分与活动解析', () => {
-  assert.deepEqual(parseQoderCredits({
-    userQuota: { remaining: 10 },
-    personalQuota: { remaining: 5 },
-    addOnQuota: { remaining: 2 },
-    isQuotaExceeded: false,
-  }), { remaining: 17, exceeded: false })
-  assert.deepEqual(
-    parseQoderCredits({ data: { organizationQuota: { remaining: 3, available: true } } }),
-    { remaining: 3, exceeded: false },
-  )
-  assert.deepEqual(
-    parseQoderCredits({ organizationQuota: { remaining: 3, available: false } }),
-    { remaining: 0, exceeded: false },
-  )
-
-  const list = parseCampaigns({ campaigns: [
-    { campaignId: 'c1', claimStatus: 'claimable', benefit: { kind: 'CREDITS', amount: 100 } },
-    { campaignKey: 'c2', claimStatus: 'CLAIMED', benefit: null },
-  ] })
-  assert.equal(list.campaigns.length, 2)
-  assert.equal(list.campaigns[0].claimable, true)
-  assert.equal(list.campaigns[0].grantsCredits, true)
-  assert.equal(list.campaigns[1].claimStatus, 'CLAIMED')
-  assert.equal(list.campaigns[1].benefitAmount, 0)
-
-  assert.deepEqual(
-    parseClaim({ status: 'CLAIMED', benefit: { amount: 100 } }),
-    { newly: true, amount: 100, status: 'CLAIMED' },
-  )
-  assert.deepEqual(
-    parseClaim({ status: 'CLAIMED', replayed: true, benefit: { amount: 100 } }),
-    { newly: false, amount: 0, status: 'CLAIMED' },
-  )
-})
-
 test('上游排队错误识别', () => {
   const body = JSON.stringify({
     code: '10605',
@@ -277,25 +181,12 @@ test('上游排队错误识别', () => {
   const info = queueInfoOf(body)
   assert.equal(info.retryAfterSeconds, 60)
   assert.equal(info.modelKey, 'dmodel')
-  const text = queueMessage('Qoder', info)
+  const text = queueMessage('TRAE', info)
   assert.ok(text.includes('排队'))
   assert.ok(text.includes('60 秒'))
   assert.ok(text.includes('dmodel'))
   assert.equal(queueInfoOf('{"message":"普通错误"}'), null)
   assert.equal(queueInfoOf({ statusCodeValue: 200 }), null)
-})
-
-test('Qoder 每日活动判定', () => {  // UTC+8 09:59 还没刷新；10:00 之后才是今天这一轮。
-  assert.equal(campaignsRefreshedToday(Date.UTC(2026, 0, 2, 1, 59)), false)
-  assert.equal(campaignsRefreshedToday(Date.UTC(2026, 0, 2, 2, 0)), true)
-  const list = parseCampaigns({ campaigns: [
-    { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', endAt: 123, benefit: { amount: '50' } },
-    { campaignId: 'c2', actionType: 'VIEW_PAGE', claimStatus: 'CLAIMABLE' },
-  ] })
-  assert.equal(list.campaigns[0].actionType, 'CLAIM_BENEFIT')
-  assert.equal(list.campaigns[0].endAt, 123)
-  assert.equal(list.campaigns[0].benefitAmount, 50)
-  assert.equal(list.campaigns[1].actionType, 'VIEW_PAGE')
 })
 
 test('签到时间与到期判定', () => {
@@ -312,7 +203,7 @@ test('签到时间与到期判定', () => {
   assert.equal(isCheckinDue({ enabled: false, time: '09:00', lastDay: '' }, now), false)
 })
 
-test('Qoder 模型倍率标签', () => {
+test('模型倍率标签', () => {
   assert.deepEqual(priceBadge(0), { text: '免费', tone: 'success' })
   assert.deepEqual(priceBadge(0.5), { text: '×0.5', tone: 'info' })
   assert.deepEqual(priceBadge(8), { text: '×8', tone: 'info' })
@@ -388,18 +279,6 @@ test('倍率展示文本（含原价箭头）', () => {
   assert.equal(priceText({ priceFactor: 0, originalPriceFactor: 0.1 }), '×0.1→免费')
   assert.equal(priceText({ priceFactor: 0.5, originalPriceFactor: 0.5 }), '×0.5')
   assert.equal(priceText({ priceFactor: null }), '')
-})
-
-test('Qoder 目录解析原价字段', () => {
-  const rows = parseCatalog(JSON.stringify({
-    models: [
-      { key: 'qmodel', display_name: 'Qwen3.7-Plus', price_factor: 0.04, original_price_factor: 0.1 },
-      { key: 'dfmodel', display_name: 'DeepSeek-Flash', price_factor: 0 },
-    ],
-  }))
-  assert.equal(rows.length, 2)
-  assert.equal(rows[0].originalPriceFactor, 0.1)
-  assert.equal(rows[1].originalPriceFactor, null)
 })
 
 console.log(`\n全部通过（${passed} 项）。`)

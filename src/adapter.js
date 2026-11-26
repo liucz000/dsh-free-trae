@@ -1,5 +1,5 @@
 /**
- * 宿主 LLM 适配器：只注册 trae / qoder 两个 provider。
+ * 宿主 LLM 适配器：只注册 trae 一个 provider。
  *
  * 负责把宿主的一次生成请求落到某个账号上：
  *  1. 选账号（选中优先，失败再试一个）→ 临期续期；
@@ -18,14 +18,8 @@ import {
 } from './trae/auth.js'
 import { fetchModels as traeFetchModels, FALLBACK_MODELS, priceFactorFor } from './trae/models.js'
 import { chatDeltas as traeChatDeltas, prepareBody as traePrepareBody } from './trae/upstream.js'
-import {
-  ensureFresh as qoderEnsureFresh,
-  refreshAccount as qoderRefreshAccount,
-} from './qoder/auth.js'
-import { BUILTIN, fetchCatalog, resolveModel as qoderResolveModel } from './qoder/models.js'
-import { chatDeltas as qoderChatDeltas, prepareBody as qoderPrepareBody } from './qoder/upstream.js'
 
-const LABELS = { trae: 'TRAE', qoder: 'Qoder' }
+const LABELS = { trae: 'TRAE' }
 const IMAGE_PRICING = Object.freeze({
   priceImages(images) {
     return images.map(image => (image?.offloaded === true
@@ -35,7 +29,7 @@ const IMAGE_PRICING = Object.freeze({
 })
 
 function baseModelId(model) {
-  return String(model ?? '').replace(/\([^()]+\)\s*$/, '').trim().replace(/^(trae|qoder)[:/]/, '')
+  return String(model ?? '').replace(/\([^()]+\)\s*$/, '').trim().replace(/^trae[:/]/, '')
 }
 
 function errorMessage(error) {
@@ -51,7 +45,7 @@ export function formatFactor(value) {
 }
 
 /**
- * Qoder 计费倍率 → 模型选择器里的小标签。
+ * 计费倍率 → 模型选择器里的小标签。
  * 免费（0）用 success，有倍率用 info，未知（null）不显示。
  */
 export function priceBadge(priceFactor) {
@@ -95,24 +89,21 @@ export function createAdapter({ store, logger = console } = {}) {
     return [...active, ...rows.filter(row => row.id !== activeId)]
   }
 
-  async function ensure(provider, account) {
-    const options = { store }
-    if (provider === 'trae') return traeEnsureFresh(account, options)
-    return qoderEnsureFresh(account, options)
+  async function ensure(account) {
+    return traeEnsureFresh(account, { store })
   }
 
-  async function forceRefresh(provider, account) {
-    if (provider === 'trae') return traeRefreshAccount(account, { store })
-    return qoderRefreshAccount(account, { store })
+  async function forceRefresh(account) {
+    return traeRefreshAccount(account, { store })
   }
 
   function buildMessages(options) {
     return toOpenAiMessages(options.messages)
   }
 
-  function buildBaseBody(options, messages, provider) {
+  function buildBaseBody(options, messages) {
     const body = { model: baseModelId(options.model), messages, stream: true }
-    const tools = toToolDefs(options.tools, { stringify: provider === 'trae' })
+    const tools = toToolDefs(options.tools, { stringify: true })
     if (tools.length > 0) {
       body.tools = tools
       if (options.toolChoice !== undefined) body.tool_choice = options.toolChoice
@@ -181,32 +172,10 @@ export function createAdapter({ store, logger = console } = {}) {
       const models = await traeModelsFor(account)
       return models.map(model => traeModelInfo(provider, model, 'TRAE 内置模型'))
     } catch (error) {
-      logger.warn?.(`[trae-qoder] TRAE 模型目录拉取失败：${errorMessage(error)}`)
+      logger.warn?.(`[free-trae] TRAE 模型目录拉取失败：${errorMessage(error)}`)
       // 目录接口对国际服不一定可用；至少把兜底模型列出来，别让选择器空着。
       return fallbackTraeModels(provider, 'TRAE 兜底模型（目录未同步）')
     }
-  }
-
-  async function listQoderModels(provider) {
-    const account = store.current('qoder')
-    const models = account === null || account === undefined
-      ? BUILTIN.map(entry => ({ ...entry, maxOutput: Math.min(32_000, entry.contextWindow) }))
-      : await fetchCatalog(account)
-    return models.map(model => {
-      const badge = priceBadge(model.priceFactor)
-      const text = priceText(model)
-      const description = text === ''
-        ? 'Qoder 内置模型'
-        : (text === '免费' ? 'Qoder 免费模型' : `Qoder 计费倍率 ${text}`)
-      return {
-        provider,
-        id: model.id,
-        name: model.name,
-        description,
-        inputModalities: ['text'],
-        ...(badge === undefined ? {} : { badge }),
-      }
-    })
   }
 
   async function resolveTrae(provider, model) {
@@ -228,26 +197,14 @@ export function createAdapter({ store, logger = console } = {}) {
     }
   }
 
-  async function resolveQoder(provider, model) {
-    const entry = qoderResolveModel(baseModelId(model))
-    return {
-      provider,
-      id: entry.id,
-      name: entry.name,
-      inputModalities: ['text'],
-      context: { contextWindow: entry.contextWindow },
-      defaultMaxTokens: Math.min(entry.maxOutput ?? 32_000, 32_000),
-    }
-  }
-
   function resolveModel(provider, model) {
-    return provider === 'trae' ? resolveTrae(provider, model) : resolveQoder(provider, model)
+    return resolveTrae(provider, model)
   }
 
   async function * stream(options, provider = options?.provider, model = options?.model) {
     // 宿主有两条调用路径：prepareCall 闭包会显式传 provider/model，
     // 而 LlmRuntime 也可能直接 adapter.stream(options)——此时只能从 options 里取。
-    if (provider !== 'trae' && provider !== 'qoder') {
+    if (provider !== 'trae') {
       yield {
         type: 'finish',
         reason: {
@@ -285,29 +242,25 @@ export function createAdapter({ store, logger = console } = {}) {
         }
         return
       }
-      const base = buildBaseBody(options, messages, provider)
+      const base = buildBaseBody(options, messages)
       let emitted = false
       let lastError = null
 
       candidates: for (const candidate of accounts.slice(0, 2)) {
         let account = candidate
         try {
-          account = await ensure(provider, account)
+          account = await ensure(account)
         } catch (error) {
           lastError = error
-          logger.warn?.(`[trae-qoder] ${LABELS[provider]} 续期失败：${errorMessage(error)}`)
+          logger.warn?.(`[free-trae] ${LABELS[provider]} 续期失败：${errorMessage(error)}`)
           if (accounts.indexOf(candidate) < accounts.slice(0, 2).length - 1) continue
         }
         for (let authAttempt = 0; authAttempt < 2; authAttempt++) {
           const emitter = new HarnessEmitter()
           const attemptAccount = account
-          const body = provider === 'trae'
-            ? traePrepareBody(base)
-            : qoderPrepareBody(base, attemptAccount)
+          const body = traePrepareBody(base)
           try {
-            const deltas = provider === 'trae'
-              ? traeChatDeltas({ body, account: attemptAccount, signal })
-              : qoderChatDeltas({ body, account: attemptAccount, signal })
+            const deltas = traeChatDeltas({ body, account: attemptAccount, signal })
             for await (const delta of deltas) {
               if (delta.usage !== undefined) emitter.setUsage(delta.usage)
               if (delta.finishReason !== undefined) emitter.setFinish(delta.finishReason)
@@ -334,14 +287,14 @@ export function createAdapter({ store, logger = console } = {}) {
             // 401：续期后同一账号再试一次（只试一次，避免死循环）。
             if (status === 401 && authAttempt === 0) {
               try {
-                account = await forceRefresh(provider, attemptAccount)
-                logger.info?.(`[trae-qoder] ${LABELS[provider]} 已续期，重试一次`)
+                account = await forceRefresh(attemptAccount)
+                logger.info?.(`[free-trae] ${LABELS[provider]} 已续期，重试一次`)
                 continue
               } catch (refreshError) {
                 lastError = refreshError
               }
             }
-            logger.warn?.(`[trae-qoder] ${LABELS[provider]} 请求失败：${errorMessage(error)}`)
+            logger.warn?.(`[free-trae] ${LABELS[provider]} 请求失败：${errorMessage(error)}`)
             // 还没吐字 + 还有别的账号 + 错误看起来是账号级/瞬时问题 → 换号
             if (!emitted && isRetryable(error) && accounts.slice(0, 2).indexOf(candidate) < accounts.slice(0, 2).length - 1) {
               continue candidates
@@ -398,7 +351,7 @@ export function createAdapter({ store, logger = console } = {}) {
     },
 
     async listModels(provider) {
-      return provider === 'trae' ? listTraeModels(provider) : listQoderModels(provider)
+      return listTraeModels(provider)
     },
 
     resolveModel,

@@ -1,11 +1,11 @@
 /**
  * 积分查询 / 每日签到的编排与定时调度（Host 侧）。
  *
- *  - {@link collectCredits}：把两个渠道**所有账号**的可用积分各查一遍，单账号失败只影响它自己。
+ *  - {@link collectCredits}：把 TRAE 所有账号的可用积分各查一遍，单账号失败只影响它自己。
  *  - {@link createCheckinRunner}：手动 / 定时共用的签到执行器（同一时刻只跑一轮）。
  *  - {@link startCheckinScheduler}：60 秒看一次表，到了设定时刻且今天还没跑过就补跑。
  *
- * 签到结果与开关落在 `~/.dsh/trae-qoder/settings.json`（由 store 管理），重启后仍在。
+ * 签到结果与开关落在 `~/.dsh/free-trae/settings.json`（由 store 管理），重启后仍在。
  *
  * @module src/checkin.js
  */
@@ -15,13 +15,8 @@ import {
   fetchCredits as traeFetchCredits,
   runCheckin as traeRunCheckin,
 } from './trae/credits.js'
-import { ensureFresh as qoderEnsureFresh } from './qoder/auth.js'
-import {
-  fetchCredits as qoderFetchCredits,
-  runCheckin as qoderRunCheckin,
-} from './qoder/credits.js'
 
-const PROVIDERS = ['trae', 'qoder']
+const PROVIDERS = ['trae']
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/
 
 function textOf(error) {
@@ -63,31 +58,24 @@ export function isCheckinDue(checkin, now = new Date()) {
   return minutesOfDay(now) >= target
 }
 
-function freshFor(provider, account, store, signal) {
-  const options = { store, signal }
-  return provider === 'trae'
-    ? traeEnsureFresh(account, options)
-    : qoderEnsureFresh(account, options)
+function freshFor(account, store, signal) {
+  return traeEnsureFresh(account, { store, signal })
 }
 
-function checkinFor(provider, account, signal) {
-  return provider === 'trae'
-    ? traeRunCheckin(account, { signal })
-    : qoderRunCheckin(account, { signal })
+function checkinFor(account, signal) {
+  return traeRunCheckin(account, { signal })
 }
 
-function creditsFor(provider, account, signal) {
-  return provider === 'trae'
-    ? traeFetchCredits(account, { signal })
-    : qoderFetchCredits(account, { signal })
+function creditsFor(account, signal) {
+  return traeFetchCredits(account, { signal })
 }
 
 /**
  * 查询全部账号的积分。
- * @returns {{at:number, trae:Array, qoder:Array}}
+ * @returns {{at:number, trae:Array}}
  */
 export async function collectCredits({ store, signal } = {}) {
-  const out = { at: Date.now(), trae: [], qoder: [] }
+  const out = { at: Date.now(), trae: [] }
   for (const provider of PROVIDERS) {
     for (const row of store.list(provider)) {
       if (provider === 'trae' && row.region !== 'cn') {
@@ -98,8 +86,8 @@ export async function collectCredits({ store, signal } = {}) {
         continue
       }
       try {
-        const account = await freshFor(provider, row, store, signal)
-        const value = await creditsFor(provider, account, signal)
+        const account = await freshFor(row, store, signal)
+        const value = await creditsFor(account, signal)
         out[provider].push({
           id: row.id, name: row.name ?? '',
           remaining: value.remaining, exceeded: value.exceeded === true,
@@ -117,7 +105,7 @@ export async function collectCredits({ store, signal } = {}) {
   return out
 }
 
-/** 对指定渠道（默认两个渠道）的全部账号各跑一次签到；单个账号失败不影响其它。 */
+/** 对 TRAE 的全部账号各跑一次签到；单个账号失败不影响其它。 */
 export async function runAllCheckins({ store, logger, signal, providers = PROVIDERS } = {}) {
   const results = []
   for (const provider of providers) {
@@ -129,11 +117,11 @@ export async function runAllCheckins({ store, logger, signal, providers = PROVID
         continue
       }
       try {
-        const account = await freshFor(provider, row, store, signal)
-        const result = await checkinFor(provider, account, signal)
+        const account = await freshFor(row, store, signal)
+        const result = await checkinFor(account, signal)
         results.push({ ...base, ...result })
       } catch (error) {
-        logger?.warn?.(`[trae-qoder] ${provider} 签到失败（${base.name}）：${textOf(error)}`)
+        logger?.warn?.(`[free-trae] ${provider} 签到失败（${base.name}）：${textOf(error)}`)
         results.push({ ...base, status: 'fail', amount: 0, message: textOf(error) })
       }
     }
@@ -190,15 +178,15 @@ export function startCheckinScheduler({ store, logger, runCheckin, intervalMs = 
   async function tick(trigger) {
     if (ticking) return
     const settings = store.settings().checkin
-    // 两个渠道各自判断：只跑到了点且今天没跑过的那一边。
+    // 只跑到了点且今天还没跑过的那一边。
     const due = PROVIDERS.filter(provider => isCheckinDue(settings[provider]))
     if (due.length === 0) return
     ticking = true
     try {
-      logger?.info?.(`[trae-qoder] 定时签到开始：${due.join(', ')}`)
+      logger?.info?.(`[free-trae] 定时签到开始：${due.join(', ')}`)
       await runCheckin({ trigger, providers: due })
     } catch (error) {
-      logger?.warn?.(`[trae-qoder] 定时签到失败：${textOf(error)}`)
+      logger?.warn?.(`[free-trae] 定时签到失败：${textOf(error)}`)
     } finally {
       ticking = false
     }

@@ -1,7 +1,7 @@
 /**
- * 账号库：~/.dsh/trae-qoder/accounts.json（0600）。
+ * 账号库：~/.dsh/free-trae/accounts.json（0600）。
  *
- * 只存 TRAE / Qoder 两个 provider 的账号。token 全部落在这个文件里，
+ * 只存 TRAE 一个 provider 的账号。token 全部落在这个文件里，
  * 不上传、不打日志；HTTP 接口只返回掩码后的视图。
  *
  * @module src/store.js
@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-export const PROVIDERS = ['trae', 'qoder']
+export const PROVIDERS = ['trae']
 
 export function resolveDshHome() {
   const fromEnv = process.env.DSH_HOME
@@ -20,7 +20,7 @@ export function resolveDshHome() {
 }
 
 function emptyState() {
-  return { version: 1, active: { trae: '', qoder: '' }, trae: [], qoder: [] }
+  return { version: 1, active: { trae: '' }, trae: [] }
 }
 
 function emptyCheckinState() {
@@ -35,7 +35,7 @@ function emptyCheckinState() {
 }
 
 function emptySettings() {
-  return { version: 1, checkin: { trae: emptyCheckinState(), qoder: emptyCheckinState() } }
+  return { version: 1, checkin: { trae: emptyCheckinState() } }
 }
 
 function normalizeCheckinState(value) {
@@ -59,14 +59,12 @@ function normalizeSettings(value) {
   if (value === null || typeof value !== 'object') return settings
   const checkin = value.checkin
   if (checkin === null || typeof checkin !== 'object') return settings
-  // 旧版是单个扁平对象（两渠道共用一个开关）；读到时迁移成每边一份。
-  if (!('trae' in checkin) && !('qoder' in checkin)) {
-    const legacy = normalizeCheckinState(checkin)
-    settings.checkin = { trae: { ...legacy }, qoder: { ...legacy } }
+  // 旧版是单个扁平对象；读到时迁移成 trae 这一份。
+  if (!('trae' in checkin)) {
+    settings.checkin = { trae: normalizeCheckinState(checkin) }
     return settings
   }
   settings.checkin.trae = normalizeCheckinState(checkin.trae)
-  settings.checkin.qoder = normalizeCheckinState(checkin.qoder)
   return settings
 }
 
@@ -101,7 +99,7 @@ export function publicAccount(provider, account) {
   }
 }
 
-export function createStore({ home = resolveDshHome(), dirName = 'trae-qoder' } = {}) {
+export function createStore({ home = resolveDshHome(), dirName = 'free-trae' } = {}) {
   const dir = path.join(home, dirName)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const file = path.join(dir, 'accounts.json')
@@ -189,7 +187,6 @@ export function createStore({ home = resolveDshHome(), dirName = 'trae-qoder' } 
     return {
       active: { ...read().active },
       trae: read().trae.map(row => publicAccount('trae', row)),
-      qoder: read().qoder.map(row => publicAccount('qoder', row)),
     }
   }
 
@@ -217,13 +214,12 @@ export function createStore({ home = resolveDshHome(), dirName = 'trae-qoder' } 
     return JSON.parse(JSON.stringify(readSettings()))
   }
 
-  /** 合并写入；`checkin` 按渠道分别覆盖传入的键。 */
+  /** 合并写入；`checkin` 按渠道覆盖传入的键。 */
   function updateSettings(patch) {
     const current = readSettings()
     const checkinPatch = patch?.checkin ?? {}
     const checkin = {
       trae: { ...current.checkin.trae, ...(checkinPatch.trae ?? {}) },
-      qoder: { ...current.checkin.qoder, ...(checkinPatch.qoder ?? {}) },
     }
     return writeSettings({ ...current, ...patch, checkin })
   }
