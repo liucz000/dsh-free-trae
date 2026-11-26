@@ -1,6 +1,6 @@
 {
   "name": "dsh-trae-qoder",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "type": "module",
   "description": "只做 TRAE（国服/国际）与 Qoder（国内/国际）两条登录渠道的 DSH 插件：账号登录、模型目录、对话转发。不包含其它渠道，不含免登录中转。",

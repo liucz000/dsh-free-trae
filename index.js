@@ -298,15 +298,28 @@ export function apply(ctx, config = {}) {
   const store = createStore({ home: config.home ?? resolveDshHome() })
   const adapter = createAdapter({ store, logger })
 
-  const registration = ctx.llm.registerAdapter(['trae', 'qoder'], adapter)
   const settingsNs = ctx.fiber?.entry?.options?.id ?? name
-  ctx.llm.registerConfigurableProviders?.([
-    { provider: 'trae', displayName: 'TRAE', settingsNs, settingsPath: [] },
-    { provider: 'qoder', displayName: 'Qoder', settingsNs, settingsPath: [] },
-  ])
+
+  // 同一个包可能在组合里出现两次（旧版本残留、安装器额外插了一行等）。
+  // 第二个实例重复注册 provider 会让整个条目激活失败，连设置页接口都挂不上，
+  // 所以这里每一步都单独兜底：能注册的注册，被别人占用的就跳过。
+  let registration = null
+  try {
+    registration = ctx.llm.registerAdapter(['trae', 'qoder'], adapter)
+  } catch (error) {
+    logger.warn?.(`[trae-qoder] 跳过 LLM 适配器注册（provider 已被占用）：${textOf(error)}`)
+  }
+  try {
+    ctx.llm.registerConfigurableProviders?.([
+      { provider: 'trae', displayName: 'TRAE', settingsNs, settingsPath: [] },
+      { provider: 'qoder', displayName: 'Qoder', settingsNs, settingsPath: [] },
+    ])
+  } catch (error) {
+    logger.warn?.(`[trae-qoder] 跳过模型页条目注册：${textOf(error)}`)
+  }
 
   const router = createRouter({ store, logger, adapter })
-  let mounted = false
+  let mounted = 0
 
   // 首选：共享 /api 通道的精确路由。桌面端没有 webServer，只有这条能生效。
   ctx.inject(['connection'], scoped => {
@@ -315,28 +328,36 @@ export function apply(ctx, config = {}) {
     for (const endpoint of ENDPOINTS) {
       const path = `${API_PREFIX}${endpoint.path}`
       const handler = fetchHandler(router, path)
-      scoped.effect(
-        () => connection.fetch.register({
-          path,
-          methods: endpoint.methods,
-          requestBody: 'buffered',
-          fetch: handler,
-        }),
-        `trae-qoder: ${path}`,
-      )
+      scoped.effect(() => {
+        try {
+          return connection.fetch.register({
+            path,
+            methods: endpoint.methods,
+            requestBody: 'buffered',
+            fetch: handler,
+          })
+        } catch (error) {
+          logger.warn?.(`[trae-qoder] 路由 ${path} 已被占用：${textOf(error)}`)
+          return () => {}
+        }
+      }, `trae-qoder: ${path}`)
+      mounted += 1
     }
-    mounted = true
     logger.info?.(`trae-qoder: 设置接口挂在共享通道 ${API_PREFIX}`)
   })
 
   // 兜底：没有 connection 的宿主（例如精简 Web 组合）用 webServer 前缀路由。
   ctx.inject(['webServer'], scoped => {
     const server = scoped.webServer
-    scoped.effect(
-      () => server.register({ kind: 'prefix', path: API_PREFIX, handler: httpHandler(router) }),
-      'trae-qoder: settings API',
-    )
-    if (!mounted) logger.info?.(`trae-qoder: 设置接口挂在 ${API_PREFIX}`)
+    scoped.effect(() => {
+      try {
+        return server.register({ kind: 'prefix', path: API_PREFIX, handler: httpHandler(router) })
+      } catch (error) {
+        logger.warn?.(`[trae-qoder] 前缀路由 ${API_PREFIX} 已被占用：${textOf(error)}`)
+        return () => {}
+      }
+    }, 'trae-qoder: settings API')
+    if (mounted === 0) logger.info?.(`trae-qoder: 设置接口挂在 ${API_PREFIX}`)
   })
 
   ctx.effect(() => () => {

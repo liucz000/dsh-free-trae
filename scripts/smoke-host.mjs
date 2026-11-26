@@ -24,7 +24,7 @@ function ok(name) {
   console.log(`ok ${steps} - ${name}`)
 }
 
-function makeCtx({ withWebServer, withConnection }) {
+function makeCtx({ withWebServer, withConnection, duplicate = false }) {
   const routes = []
   const fetchRoutes = new Map()
   const disposers = []
@@ -39,6 +39,7 @@ function makeCtx({ withWebServer, withConnection }) {
   if (withWebServer) {
     scope.webServer = {
       register(value) {
+        if (duplicate) throw new Error(`webserver: duplicate prefix route ${JSON.stringify(value.path)}`)
         routes.push(value)
         return () => {}
       },
@@ -48,6 +49,7 @@ function makeCtx({ withWebServer, withConnection }) {
     scope.connection = {
       fetch: {
         register(value) {
+          if (duplicate) throw new Error(`connection: exact Fetch route ${JSON.stringify(value.path)} is already registered`)
           fetchRoutes.set(value.path, value)
           return async () => { fetchRoutes.delete(value.path) }
         },
@@ -60,6 +62,7 @@ function makeCtx({ withWebServer, withConnection }) {
     llm: {
       registerAdapter(providers, value) {
         assert.deepEqual(providers, ['trae', 'qoder'])
+        if (duplicate) throw new Error(`an adapter for provider "${providers[0]}" is already registered`)
         adapter = value
         return () => {}
       },
@@ -80,7 +83,7 @@ function makeCtx({ withWebServer, withConnection }) {
   }
 
   apply(ctx, { home })
-  assert.ok(adapter !== null, '没有注册 LLM 适配器')
+  if (!duplicate) assert.ok(adapter !== null, '没有注册 LLM 适配器')
   return { routes, fetchRoutes, disposers }
 }
 
@@ -174,7 +177,14 @@ assert.equal(preflight.status, 204)
 ok('OPTIONS 预检')
 
 server.close()
-for (const group of [desktop, web]) {
+
+// ── 3. 重复实例：provider 与路由都被占用时，激活不能抛错 ──────────────────
+const dup = makeCtx({ withWebServer: true, withConnection: true, duplicate: true })
+assert.equal(dup.routes.length, 0, '被占用的前缀路由不应重复注册')
+assert.equal(dup.fetchRoutes.size, 0, '被占用的精确路由不应重复注册')
+ok('重复实例跳过注册且不抛错')
+
+for (const group of [desktop, web, dup]) {
   for (const dispose of group.disposers.reverse()) {
     if (typeof dispose === 'function') dispose()
   }
