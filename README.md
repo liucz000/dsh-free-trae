@@ -1,4 +1,4 @@
-# free-trae
+# dsh-free-trae
 
 只维护 **TRAE** 的 DSH 插件：登录、账号、模型目录、流式对话、积分显示、每日签到。
 
@@ -26,10 +26,10 @@ TRAE 从目录的 `display_contact_config` 解出实时 `consumption_rate.data.r
 ## 安装
 
 ```bash
-cd free-trae
+cd dsh-free-trae
 npm pack
 # 用你的 DSH 安装插件的方式安装生成的 tar 包，例如：
-dsh plugin install ./free-trae-0.3.0.tgz
+dsh plugin install ./dsh-free-trae-0.3.1.tgz
 ```
 
 也可以直接把这个目录放进 DSH 的插件目录，或用本地路径安装。安装后重启 DSH，设置页会出现 **TRAE** 分区。

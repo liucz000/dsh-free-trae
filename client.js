@@ -1,5 +1,5 @@
 /**
- * free-trae — 浏览器半身。
+ * dsh-free-trae — 浏览器半身。
  *
  * 在设置页注册一个 "TRAE" 分区：
  *   TRAE  : 选区域 → 生成授权链接 → 粘贴回调地址 → 完成登录
@@ -7,11 +7,11 @@
  * 数据全部走同源 `/api/free-trae/*`，不直接碰 token 之外的宿主 API。
  * 颜色只用宿主的 dsw-alias 主题变量，跟随亮/暗色。
  *
- * @module free-trae/client
+ * @module dsh-free-trae/client
  */
 
 window.__ModuleLoader__.load({
-  id: 'free-trae',
+  id: 'dsh-free-trae',
   factory: require => {
     const module = { exports: {} }
     const exports = module.exports
@@ -521,7 +521,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',
-        id: 'free-trae',
+        id: 'dsh-free-trae',
         order: 36,
         label: () => 'TRAE',
         locale: NS,
@@ -530,7 +530,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.inject = inject
-    exports.name = 'free-trae'
+    exports.name = 'dsh-free-trae'
     return module.exports
   },
 })

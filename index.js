@@ -1,5 +1,5 @@
 /**
- * free-trae — Host 半身。
+ * dsh-free-trae — Host 半身。
  *
  * 只做一条渠道：TRAE 国服 / 国际服（浏览器授权 + 手动粘贴回调）。
  *
@@ -11,7 +11,7 @@
  *      （Electron 走 IPC 桥，不提供 webServer）都走这条。
  *   2. `ctx.webServer`：`/api/free-trae` 前缀路由，作为没有 connection 时的兜底。
  *
- * @module free-trae
+ * @module dsh-free-trae
  */
 
 import { createAdapter } from './src/adapter.js'
@@ -30,7 +30,7 @@ import {
   normalizeTime,
   startCheckinScheduler,
 } from './src/checkin.js'
-export const name = 'free-trae'
+export const name = 'dsh-free-trae'
 export const inject = ['llm']
 
 const API_PREFIX = '/api/free-trae'
@@ -175,7 +175,7 @@ export function createRouter({ store, logger, adapter, checkin }) {
 
       return send(404, { error: `未知接口 ${method} ${routePath}` })
     } catch (error) {
-      logger.warn?.(`[free-trae] ${method} ${routePath} 失败：${textOf(error)}`)
+      logger.warn?.(`[dsh-free-trae] ${method} ${routePath} 失败：${textOf(error)}`)
       const status = Number(error?.status) >= 400 && Number(error?.status) < 600 ? Number(error.status) : 400
       return send(status, { error: textOf(error) })
     }
@@ -284,7 +284,7 @@ export function apply(ctx, config = {}) {
   try {
     registrations.push(ctx.llm.registerAdapter(['trae'], adapter))
   } catch (error) {
-    logger.warn?.(`[free-trae] 适配器 provider「trae」已被占用，跳过：${textOf(error)}`)
+    logger.warn?.(`[dsh-free-trae] 适配器 provider「trae」已被占用，跳过：${textOf(error)}`)
   }
 
   const directoryEntries = [
@@ -293,7 +293,7 @@ export function apply(ctx, config = {}) {
   try {
     ctx.llm.registerConfigurableProviders?.(directoryEntries)
   } catch (error) {
-    logger.warn?.(`[free-trae] 模型页条目「trae」已被占用，跳过：${textOf(error)}`)
+    logger.warn?.(`[dsh-free-trae] 模型页条目「trae」已被占用，跳过：${textOf(error)}`)
   }
 
   const router = createRouter({ store, logger, adapter, checkin })
@@ -303,7 +303,7 @@ export function apply(ctx, config = {}) {
   if (registrations.length > 0) {
     ctx.effect(
       () => startCheckinScheduler({ store, logger, runCheckin: options => checkin.run(options) }),
-      'free-trae: checkin scheduler',
+      'dsh-free-trae: checkin scheduler',
     )
   }
 
@@ -323,13 +323,13 @@ export function apply(ctx, config = {}) {
             fetch: handler,
           })
         } catch (error) {
-          logger.warn?.(`[free-trae] 路由 ${path} 已被占用：${textOf(error)}`)
+          logger.warn?.(`[dsh-free-trae] 路由 ${path} 已被占用：${textOf(error)}`)
           return () => {}
         }
-      }, `free-trae: ${path}`)
+      }, `dsh-free-trae: ${path}`)
       mounted += 1
     }
-    logger.info?.(`free-trae: 设置接口挂在共享通道 ${API_PREFIX}`)
+    logger.info?.(`dsh-free-trae: 设置接口挂在共享通道 ${API_PREFIX}`)
   })
 
   // 兜底：没有 connection 的宿主（例如精简 Web 组合）用 webServer 前缀路由。
@@ -339,16 +339,16 @@ export function apply(ctx, config = {}) {
       try {
         return server.register({ kind: 'prefix', path: API_PREFIX, handler: httpHandler(router) })
       } catch (error) {
-        logger.warn?.(`[free-trae] 前缀路由 ${API_PREFIX} 已被占用：${textOf(error)}`)
+        logger.warn?.(`[dsh-free-trae] 前缀路由 ${API_PREFIX} 已被占用：${textOf(error)}`)
         return () => {}
       }
-    }, 'free-trae: settings API')
-    if (mounted === 0) logger.info?.(`free-trae: 设置接口挂在 ${API_PREFIX}`)
+    }, 'dsh-free-trae: settings API')
+    if (mounted === 0) logger.info?.(`dsh-free-trae: 设置接口挂在 ${API_PREFIX}`)
   })
 
   ctx.effect(() => () => {
     for (const registration of registrations) {
       try { registration?.() } catch { /* 宿主已在拆卸 */ }
     }
-  }, 'free-trae: adapter routes')
+  }, 'dsh-free-trae: adapter routes')
 }
