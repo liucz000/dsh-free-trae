@@ -301,21 +301,38 @@ export function apply(ctx, config = {}) {
   const settingsNs = ctx.fiber?.entry?.options?.id ?? name
 
   // 同一个包可能在组合里出现两次（旧版本残留、安装器额外插了一行等）。
-  // 第二个实例重复注册 provider 会让整个条目激活失败，连设置页接口都挂不上，
-  // 所以这里每一步都单独兜底：能注册的注册，被别人占用的就跳过。
-  let registration = null
+  // registerAdapter / registerConfigurableProviders 都是「全有或全无」：只要一条 provider
+  // 被别的实例占着，整批就抛错，另一条也会一起丢掉。所以整批失败时退化成逐个注册，
+  // 让没被占用的那条照常工作。
+  const registrations = []
   try {
-    registration = ctx.llm.registerAdapter(['trae', 'qoder'], adapter)
-  } catch (error) {
-    logger.warn?.(`[trae-qoder] 跳过 LLM 适配器注册（provider 已被占用）：${textOf(error)}`)
+    registrations.push(ctx.llm.registerAdapter(['trae', 'qoder'], adapter))
+  } catch (batchError) {
+    logger.warn?.(`[trae-qoder] 整批注册 LLM 适配器失败，改为逐个注册：${textOf(batchError)}`)
+    for (const provider of ['trae', 'qoder']) {
+      try {
+        registrations.push(ctx.llm.registerAdapter([provider], adapter))
+      } catch (error) {
+        logger.warn?.(`[trae-qoder] 适配器 provider「${provider}」已被占用，跳过：${textOf(error)}`)
+      }
+    }
   }
+
+  const directoryEntries = [
+    { provider: 'trae', displayName: 'TRAE', settingsNs, settingsPath: [] },
+    { provider: 'qoder', displayName: 'Qoder', settingsNs, settingsPath: [] },
+  ]
   try {
-    ctx.llm.registerConfigurableProviders?.([
-      { provider: 'trae', displayName: 'TRAE', settingsNs, settingsPath: [] },
-      { provider: 'qoder', displayName: 'Qoder', settingsNs, settingsPath: [] },
-    ])
-  } catch (error) {
-    logger.warn?.(`[trae-qoder] 跳过模型页条目注册：${textOf(error)}`)
+    ctx.llm.registerConfigurableProviders?.(directoryEntries)
+  } catch (batchError) {
+    logger.warn?.(`[trae-qoder] 整批注册模型页条目失败，改为逐个注册：${textOf(batchError)}`)
+    for (const entry of directoryEntries) {
+      try {
+        ctx.llm.registerConfigurableProviders?.([entry])
+      } catch (error) {
+        logger.warn?.(`[trae-qoder] 模型页条目「${entry.provider}」已被占用，跳过：${textOf(error)}`)
+      }
+    }
   }
 
   const router = createRouter({ store, logger, adapter })
@@ -361,6 +378,8 @@ export function apply(ctx, config = {}) {
   })
 
   ctx.effect(() => () => {
-    try { registration?.() } catch { /* 宿主已在拆卸 */ }
+    for (const registration of registrations) {
+      try { registration?.() } catch { /* 宿主已在拆卸 */ }
+    }
   }, 'trae-qoder: adapter routes')
 }

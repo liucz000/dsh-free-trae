@@ -106,9 +106,23 @@ export function createAdapter({ store, logger = console } = {}) {
     }
   }
 
+  function fallbackTraeModels(provider, description) {
+    return FALLBACK_MODELS.map(model => ({
+      provider,
+      id: model.id,
+      name: model.name,
+      description,
+      inputModalities: ['text'],
+    }))
+  }
+
   async function listTraeModels(provider) {
     const account = store.current('trae')
-    if (account === null || account === undefined) return []
+    if (account === null || account === undefined) {
+      // 返回空数组会让宿主的模型目录直接丢掉整个 provider 分组（选择器里什么都看不到）。
+      // 先列出兜底模型并注明未登录，用户选中后调用会得到明确的「请先登录」提示。
+      return fallbackTraeModels(provider, 'TRAE 未登录（请到设置页登录后使用）')
+    }
     try {
       const models = await traeModelsFor(account)
       return models.map(model => ({
@@ -121,13 +135,7 @@ export function createAdapter({ store, logger = console } = {}) {
     } catch (error) {
       logger.warn?.(`[trae-qoder] TRAE 模型目录拉取失败：${errorMessage(error)}`)
       // 目录接口对国际服不一定可用；至少把兜底模型列出来，别让选择器空着。
-      return FALLBACK_MODELS.map(model => ({
-        provider,
-        id: model.id,
-        name: model.name,
-        description: 'TRAE 兜底模型（目录未同步）',
-        inputModalities: ['text'],
-      }))
+      return fallbackTraeModels(provider, 'TRAE 兜底模型（目录未同步）')
     }
   }
 
@@ -182,7 +190,20 @@ export function createAdapter({ store, logger = console } = {}) {
     return provider === 'trae' ? resolveTrae(provider, model) : resolveQoder(provider, model)
   }
 
-  async function * stream(options, provider, model) {
+  async function * stream(options, provider = options?.provider, model = options?.model) {
+    // 宿主有两条调用路径：prepareCall 闭包会显式传 provider/model，
+    // 而 LlmRuntime 也可能直接 adapter.stream(options)——此时只能从 options 里取。
+    if (provider !== 'trae' && provider !== 'qoder') {
+      yield {
+        type: 'finish',
+        reason: {
+          kind: 'error',
+          failure: { message: `未知 provider「${String(provider)}」`, code: 'UNKNOWN_PROVIDER' },
+        },
+      }
+      return
+    }
+    void model
     const controller = new AbortController()
     const outer = options.signal
     const onAbort = () => controller.abort(outer?.reason)

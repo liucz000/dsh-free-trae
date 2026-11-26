@@ -23,7 +23,7 @@
 cd dsh-trae-qoder
 npm pack
 # 用你的 DSH 安装插件的方式安装生成的 tar 包，例如：
-dsh plugin install ./dsh-trae-qoder-0.1.2.tgz
+dsh plugin install ./dsh-trae-qoder-0.1.3.tgz
 ```
 
 也可以直接把这个目录放进 DSH 的插件目录，或用本地路径安装。安装后重启 DSH，设置页会出现 **TRAE / Qoder** 分区。
