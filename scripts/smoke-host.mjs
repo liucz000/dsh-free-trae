@@ -127,14 +127,19 @@ assert.deepEqual(dCredits.json.trae, [])
 assert.deepEqual(dCredits.json.qoder, [])
 ok('桌面端 GET /credits（空账号）')
 
-const dCheckinBad = await callFetch('/checkin/config', { method: 'POST', body: { enabled: true, time: '25:00' } })
+const dCheckinNoProvider = await callFetch('/checkin/config', { method: 'POST', body: { enabled: true, time: '09:00' } })
+assert.equal(dCheckinNoProvider.status, 400)
+ok('桌面端 POST /checkin/config 缺 provider 400')
+
+const dCheckinBad = await callFetch('/checkin/config', { method: 'POST', body: { provider: 'trae', enabled: true, time: '25:00' } })
 assert.equal(dCheckinBad.status, 400)
 ok('桌面端 POST /checkin/config 非法时间 400')
 
-const dCheckin = await callFetch('/checkin/config', { method: 'POST', body: { enabled: false, time: '09:30' } })
+const dCheckin = await callFetch('/checkin/config', { method: 'POST', body: { provider: 'trae', enabled: false, time: '09:30' } })
 assert.equal(dCheckin.status, 200)
-assert.equal(dCheckin.json.checkin.time, '09:30')
-ok('桌面端 POST /checkin/config')
+assert.equal(dCheckin.json.checkin.trae.time, '09:30')
+assert.equal(dCheckin.json.checkin.qoder.time, '09:00')
+ok('桌面端 POST /checkin/config（分渠道）')
 
 const dRun = await callFetch('/checkin/run', { method: 'POST', body: {} })
 assert.equal(dRun.status, 200)

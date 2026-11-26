@@ -23,18 +23,35 @@ function emptyState() {
   return { version: 1, active: { trae: '', qoder: '' }, trae: [], qoder: [] }
 }
 
-function emptySettings() {
+function emptyCheckinState() {
   return {
-    version: 1,
-    checkin: {
-      enabled: false,
-      time: '09:00',
-      lastDay: '',
-      lastRunAt: 0,
-      lastTrigger: '',
-      lastResults: [],
-    },
+    enabled: false,
+    time: '09:00',
+    lastDay: '',
+    lastRunAt: 0,
+    lastTrigger: '',
+    lastResults: [],
   }
+}
+
+function emptySettings() {
+  return { version: 1, checkin: { trae: emptyCheckinState(), qoder: emptyCheckinState() } }
+}
+
+function normalizeCheckinState(value) {
+  const state = emptyCheckinState()
+  if (value === null || typeof value !== 'object') return state
+  state.enabled = value.enabled === true
+  state.time = typeof value.time === 'string' && /^\d{1,2}:\d{2}$/.test(value.time)
+    ? value.time
+    : '09:00'
+  state.lastDay = typeof value.lastDay === 'string' ? value.lastDay : ''
+  state.lastRunAt = Number.isFinite(Number(value.lastRunAt)) ? Number(value.lastRunAt) : 0
+  state.lastTrigger = typeof value.lastTrigger === 'string' ? value.lastTrigger : ''
+  state.lastResults = Array.isArray(value.lastResults)
+    ? value.lastResults.filter(row => row !== null && typeof row === 'object')
+    : []
+  return state
 }
 
 function normalizeSettings(value) {
@@ -42,16 +59,14 @@ function normalizeSettings(value) {
   if (value === null || typeof value !== 'object') return settings
   const checkin = value.checkin
   if (checkin === null || typeof checkin !== 'object') return settings
-  settings.checkin.enabled = checkin.enabled === true
-  settings.checkin.time = typeof checkin.time === 'string' && /^\d{1,2}:\d{2}$/.test(checkin.time)
-    ? checkin.time
-    : '09:00'
-  settings.checkin.lastDay = typeof checkin.lastDay === 'string' ? checkin.lastDay : ''
-  settings.checkin.lastRunAt = Number.isFinite(Number(checkin.lastRunAt)) ? Number(checkin.lastRunAt) : 0
-  settings.checkin.lastTrigger = typeof checkin.lastTrigger === 'string' ? checkin.lastTrigger : ''
-  settings.checkin.lastResults = Array.isArray(checkin.lastResults)
-    ? checkin.lastResults.filter(row => row !== null && typeof row === 'object')
-    : []
+  // 旧版是单个扁平对象（两渠道共用一个开关）；读到时迁移成每边一份。
+  if (!('trae' in checkin) && !('qoder' in checkin)) {
+    const legacy = normalizeCheckinState(checkin)
+    settings.checkin = { trae: { ...legacy }, qoder: { ...legacy } }
+    return settings
+  }
+  settings.checkin.trae = normalizeCheckinState(checkin.trae)
+  settings.checkin.qoder = normalizeCheckinState(checkin.qoder)
   return settings
 }
 
@@ -202,10 +217,14 @@ export function createStore({ home = resolveDshHome(), dirName = 'trae-qoder' } 
     return JSON.parse(JSON.stringify(readSettings()))
   }
 
-  /** 合并写入；`checkin` 里只覆盖传入的键。 */
+  /** 合并写入；`checkin` 按渠道分别覆盖传入的键。 */
   function updateSettings(patch) {
     const current = readSettings()
-    const checkin = { ...current.checkin, ...(patch?.checkin ?? {}) }
+    const checkinPatch = patch?.checkin ?? {}
+    const checkin = {
+      trae: { ...current.checkin.trae, ...(checkinPatch.trae ?? {}) },
+      qoder: { ...current.checkin.qoder, ...(checkinPatch.qoder ?? {}) },
+    }
     return writeSettings({ ...current, ...patch, checkin })
   }
 

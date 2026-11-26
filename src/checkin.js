@@ -117,10 +117,11 @@ export async function collectCredits({ store, signal } = {}) {
   return out
 }
 
-/** 对两个渠道全部账号各跑一次签到；单个账号失败不影响其它。 */
-export async function runAllCheckins({ store, logger, signal } = {}) {
+/** 对指定渠道（默认两个渠道）的全部账号各跑一次签到；单个账号失败不影响其它。 */
+export async function runAllCheckins({ store, logger, signal, providers = PROVIDERS } = {}) {
   const results = []
-  for (const provider of PROVIDERS) {
+  for (const provider of providers) {
+    if (!PROVIDERS.includes(provider)) continue
     for (const row of store.list(provider)) {
       const base = { provider, id: row.id, name: row.name ?? row.uid ?? row.id }
       if (provider === 'trae' && row.region !== 'cn') {
@@ -147,20 +148,26 @@ export async function runAllCheckins({ store, logger, signal } = {}) {
 export function createCheckinRunner({ store, logger }) {
   let pending = null
 
-  async function run({ trigger = 'manual' } = {}) {
+  async function run({ trigger = 'manual', providers = PROVIDERS } = {}) {
     if (pending !== null) return pending
+    const wanted = [...new Set(providers)].filter(provider => PROVIDERS.includes(provider))
     pending = (async () => {
-      const results = await runAllCheckins({ store, logger })
+      const results = await runAllCheckins({ store, logger, providers: wanted })
       const at = Date.now()
       const current = store.settings().checkin
-      const next = store.updateSettings({
-        checkin: {
+      const checkin = {}
+      for (const provider of wanted) {
+        // 该渠道没有账号时不动它的记录（免得把「今天已签」标在一个空渠道上）。
+        if (store.list(provider).length === 0) continue
+        const own = results.filter(row => row.provider === provider)
+        checkin[provider] = {
           lastRunAt: at,
           lastTrigger: trigger,
-          lastResults: results,
-          lastDay: results.length > 0 ? localDay(new Date(at)) : current.lastDay,
-        },
-      })
+          lastResults: own,
+          lastDay: own.length > 0 ? localDay(new Date(at)) : current[provider].lastDay,
+        }
+      }
+      const next = store.updateSettings({ checkin })
       return { ok: true, at, trigger, results, checkin: next.checkin }
     })()
     try {
@@ -182,11 +189,14 @@ export function startCheckinScheduler({ store, logger, runCheckin, intervalMs = 
 
   async function tick(trigger) {
     if (ticking) return
-    if (!isCheckinDue(store.settings().checkin)) return
+    const settings = store.settings().checkin
+    // 两个渠道各自判断：只跑到了点且今天没跑过的那一边。
+    const due = PROVIDERS.filter(provider => isCheckinDue(settings[provider]))
+    if (due.length === 0) return
     ticking = true
     try {
-      logger?.info?.('[trae-qoder] 定时签到开始')
-      await runCheckin({ trigger })
+      logger?.info?.(`[trae-qoder] 定时签到开始：${due.join(', ')}`)
+      await runCheckin({ trigger, providers: due })
     } catch (error) {
       logger?.warn?.(`[trae-qoder] 定时签到失败：${textOf(error)}`)
     } finally {

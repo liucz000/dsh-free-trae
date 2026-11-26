@@ -212,15 +212,21 @@ export function createRouter({ store, logger, adapter, checkin }) {
       }
 
       if (method === 'POST' && routePath === '/checkin/config') {
+        const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
+        if (provider === '') return send(400, { error: 'provider 必须是 trae 或 qoder' })
         const enabled = body.enabled === true
         const time = normalizeTime(body.time)
         if (time === null) return send(400, { error: '签到时间格式应为 HH:mm' })
-        const settings = store.updateSettings({ checkin: { enabled, time } })
-        return send(200, { ok: true, checkin: settings.checkin })
+        const settings = store.updateSettings({ checkin: { [provider]: { enabled, time } } })
+        return send(200, { ok: true, provider, checkin: settings.checkin })
       }
 
       if (method === 'POST' && routePath === '/checkin/run') {
-        const result = await checkin.run({ trigger: 'manual' })
+        const provider = body.provider === 'qoder' ? 'qoder' : (body.provider === 'trae' ? 'trae' : '')
+        const result = await checkin.run({
+          trigger: 'manual',
+          ...(provider === '' ? {} : { providers: [provider] }),
+        })
         return send(200, result)
       }
 
